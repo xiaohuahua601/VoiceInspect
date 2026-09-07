@@ -78,6 +78,7 @@ class FaultAction(BaseModel):
     note: str | None = Field(default=None, max_length=2000)
     assigned_to: str | None = None
     resolution: str | None = Field(default=None, max_length=4000)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 class ReportPayload(BaseModel):
@@ -115,9 +116,11 @@ def _device_view(x: Device) -> dict:
             "site_id": x.site_id, "line_id": x.line_id, "metadata": x.metadata_json or {}, "created_at": x.created_at}
 
 
-def _fault_view(x: FaultRecord) -> dict:
+def _fault_view(x: FaultRecord, db: Session | None = None) -> dict:
+    assignee = db.get(User, x.assigned_to) if db and x.assigned_to else None
     return {"id": x.id, "device_id": x.device_id, "session_id": x.session_id, "symptom": x.symptom,
             "severity": x.severity, "status": x.status, "creator_id": x.creator_id, "assigned_to": x.assigned_to,
+            "assigned_to_name": assignee.username if assignee else None,
             "resolution": x.resolution, "created_at": x.created_at, "updated_at": x.updated_at}
 
 
@@ -275,7 +278,7 @@ def fault_list(status: str | None = None, severity: str | None = None, user: Use
     q = select(FaultRecord).where(FaultRecord.device_id.in_(ids)).order_by(desc(FaultRecord.updated_at))
     if status: q = q.where(FaultRecord.status == status)
     if severity: q = q.where(FaultRecord.severity == severity)
-    return [_fault_view(x) for x in db.scalars(q).all()]
+    return [_fault_view(x, db) for x in db.scalars(q).all()]
 
 
 def _fault(db: Session, fault_id: str, user: User) -> FaultRecord:
@@ -297,14 +300,28 @@ def _transition(db: Session, item: FaultRecord, user: User, target: FaultStatus,
     if payload.assigned_to: item.assigned_to = payload.assigned_to
     db.add(FaultEvent(fault_id=item.id, actor_id=user.id, from_status=before, to_status=item.status, note=payload.note or payload.resolution))
     _audit(db, user, action, item.id, {"from": before, "to": item.status}); db.commit(); db.refresh(item)
-    return _fault_view(item)
+    return _fault_view(item, db)
+
+
+@router.get("/fault-records/assignees")
+def fault_assignees(fault_id: str, user: User = Depends(require_roles(UserRole.MAINTENANCE_SUPERVISOR, UserRole.SYSTEM_ADMIN)), db: Session = Depends(get_db)) -> list[dict]:
+    item = _fault(db, fault_id, user)
+    device = db.get(Device, item.device_id)
+    if not device:
+        raise AppError("FAULT_NOT_FOUND", "故障设备不存在", 404, False, "fault")
+    q = select(User).where(
+        User.organization_id == device.organization_id,
+        User.status == "active",
+        User.role.in_([UserRole.OPERATOR.value, UserRole.MAINTENANCE_SUPERVISOR.value]),
+    ).order_by(User.username)
+    return [{"id": x.id, "username": x.username, "role": x.role, "status": x.status, "organization_id": x.organization_id} for x in db.scalars(q).all()]
 
 
 @router.get("/fault-records/{fault_id}")
 def fault_detail(fault_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     item = _fault(db, fault_id, user)
     events = db.scalars(select(FaultEvent).where(FaultEvent.fault_id == item.id).order_by(FaultEvent.created_at)).all()
-    return {**_fault_view(item), "events": [{"id": x.id, "from_status": x.from_status, "to_status": x.to_status, "note": x.note, "actor_id": x.actor_id, "created_at": x.created_at} for x in events]}
+    return {**_fault_view(item, db), "events": [{"id": x.id, "from_status": x.from_status, "to_status": x.to_status, "note": x.note, "actor_id": x.actor_id, "created_at": x.created_at} for x in events]}
 
 
 def _fault_action(fault_id: str, payload: FaultAction | None, target: FaultStatus, action: str, user: User, db: Session) -> dict:
@@ -318,9 +335,28 @@ def fault_confirm(fault_id: str, payload: FaultAction | None = None, user: User 
 
 @router.post("/fault-records/{fault_id}/assign")
 def fault_assign(fault_id: str, payload: FaultAction, user: User = Depends(require_roles(UserRole.MAINTENANCE_SUPERVISOR, UserRole.SYSTEM_ADMIN)), db: Session = Depends(get_db)) -> dict:
-    payload.assigned_to = payload.assigned_to or user.id
-    return _fault_action(fault_id, payload, FaultStatus.IN_PROGRESS, "fault.assigned", user, db)
-
+    item = _fault(db, fault_id, user)
+    device = db.get(Device, item.device_id)
+    if not payload.assigned_to:
+        raise AppError("FAULT_ASSIGNEE_REQUIRED", "请选择负责人", 422, False, "fault")
+    assignee = db.get(User, payload.assigned_to)
+    if not assignee or assignee.status != "active" or assignee.role not in {UserRole.OPERATOR.value, UserRole.MAINTENANCE_SUPERVISOR.value} or not device or assignee.organization_id != device.organization_id:
+        raise AppError("FAULT_ASSIGNEE_INVALID", "负责人必须是同组织的在岗操作员或维修主管", 422, False, "fault")
+    if item.status in {FaultStatus.CLOSED.value, FaultStatus.PENDING_VERIFICATION.value}:
+        raise AppError("FAULT_STATUS_TRANSITION_INVALID", "当前故障状态不允许分派或改派", 409, False, "fault")
+    if item.status not in {FaultStatus.CONFIRMED.value, FaultStatus.IN_PROGRESS.value}:
+        raise AppError("FAULT_STATUS_TRANSITION_INVALID", "请先确认故障后再分派", 409, False, "fault")
+    if item.status == FaultStatus.IN_PROGRESS.value and item.assigned_to == assignee.id:
+        return _fault_view(item, db)
+    before = item.status
+    item.assigned_to = assignee.id
+    if before == FaultStatus.CONFIRMED.value:
+        item.status = FaultStatus.IN_PROGRESS.value
+    note = payload.note or ("重新分派给 " + assignee.username if before == FaultStatus.IN_PROGRESS.value else "分派给 " + assignee.username)
+    db.add(FaultEvent(fault_id=item.id, actor_id=user.id, from_status=before, to_status=item.status, note=note))
+    _audit(db, user, "fault.reassigned" if before == FaultStatus.IN_PROGRESS.value else "fault.assigned", item.id, {"from": before, "to": item.status, "assigned_to": assignee.id, "assigned_to_name": assignee.username, "idempotency_key": payload.idempotency_key})
+    db.commit(); db.refresh(item)
+    return _fault_view(item, db)
 
 @router.post("/fault-records/{fault_id}/start")
 def fault_start(fault_id: str, payload: FaultAction | None = None, user: User = Depends(require_roles(UserRole.MAINTENANCE_SUPERVISOR, UserRole.SYSTEM_ADMIN)), db: Session = Depends(get_db)) -> dict:

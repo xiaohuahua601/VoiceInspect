@@ -28,6 +28,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 .button.full { width:100%; }
 .inline-error { margin:0 0 14px; padding:10px 12px; border-radius:9px; background:var(--danger-soft); color:var(--danger); font-size:13px; line-height:1.5; }
 .inline-notice { margin:0; color:var(--signal); font-size:13px; }
+.inline-success { margin:0 0 14px; padding:10px 12px; border:1px solid rgba(16,126,116,.28); border-radius:9px; background:#f1fbf8; color:#0d6e66; font-size:13px; line-height:1.5; }
 .workspace { display:grid; min-height:100vh; grid-template-columns:260px minmax(0,1fr); }
 .sidebar { display:flex; flex-direction:column; min-height:100vh; padding:28px 18px 18px; background:var(--ink); color:#f8f7f2; }
 .sidebar .brand { color:#f8f7f2; line-height:1.1; }
@@ -312,3 +313,10 @@ code { color:var(--signal); font:11px 'Cascadia Mono',Consolas,monospace; }
 .severity-label.severity-high,.severity-label.severity-critical { color:var(--danger); }
 .severity-label.severity-medium { color:var(--amber); }
 .severity-label.severity-low { color:var(--signal); }
+.assignment-panel { display:grid; gap:12px; margin:18px 0; padding:16px; border:1px solid var(--line); border-radius:12px; background:#fbfaf6; }
+.assignment-panel h4 { margin:2px 0 0; font-size:16px; }
+.assignment-panel p { margin:3px 0 0; color:var(--muted); font-size:12px; }
+.assignment-controls { display:flex; gap:10px; align-items:center; }
+.assignment-controls select { flex:1; min-width:0; }
+.assignment-note { width:100%; resize:vertical; }
+.read-only-notice { margin:18px 0; padding:11px 13px; border:1px solid var(--line); border-radius:9px; color:var(--muted); background:#faf9f5; font-size:13px; line-height:1.6; }
