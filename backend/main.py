@@ -80,6 +80,18 @@ def seed_demo_data() -> None:
         elif not supervisor.organization_id:
             supervisor.organization_id = organization.id
 
+        knowledge_admin = db.query(User).filter(User.username == settings.demo_knowledge_admin_username).first()
+        if not knowledge_admin:
+            knowledge_admin = User(
+                username=settings.demo_knowledge_admin_username,
+                password_hash=hash_password(settings.demo_knowledge_admin_password),
+                role="knowledge_admin",
+                organization_id=organization.id,
+            )
+            db.add(knowledge_admin)
+            db.flush()
+        elif not knowledge_admin.organization_id:
+            knowledge_admin.organization_id = organization.id
         device = db.query(Device).filter(Device.code == "A-01").first()
         if not device:
             db.add(
@@ -96,7 +108,7 @@ def seed_demo_data() -> None:
         else:
             device.organization_id, device.site_id, device.line_id = organization.id, site.id, line.id
 
-        for account in (operator, supervisor):
+        for account in (operator, supervisor, knowledge_admin):
             if not db.query(UserScope).filter(UserScope.user_id == account.id).first():
                 db.add(UserScope(user_id=account.id, organization_id=organization.id, site_id=site.id, line_id=line.id))
 

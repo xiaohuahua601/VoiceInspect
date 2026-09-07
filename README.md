@@ -33,7 +33,7 @@ npm install
 npm run dev
 ```
 
-打开 http://127.0.0.1:5173，使用演示账号 `operator / change-me`。首次启动会创建 SQLite 数据库和 `A-01` 演示设备。
+打开 http://127.0.0.1:5173，登录页支持四个本地演示账户一键填充。首次启动会创建 SQLite 数据库和 `A-01` 演示设备。
 
 ## 知识文档导入
 
@@ -110,6 +110,7 @@ faster-whisper 首次使用需要下载 STT_MODEL_SIZE 对应权重。当前默�
 |---|---|---|
 | operator | change-me | 操作员 |
 | supervisor | change-me-supervisor | 维修主管 |
+| knowledge-admin | change-me-knowledge | 知识管理员 |
 | admin | change-me-admin | 系统管理员 |
 
 首次部署后请立即通过环境变量或后台账号管理替换演示密码。前端菜单隐藏不等于安全边界，所有受保护接口仍在服务端执行角色和组织范围校验。

@@ -340,3 +340,19 @@ code { color:var(--signal); font:11px 'Cascadia Mono',Consolas,monospace; }
 .answer-markdown a { color:var(--signal); text-decoration:underline; }
 .session-answer { margin-bottom:7px; }
 .session-plain-text { margin:0 0 6px; white-space:pre-wrap; }
+.login-form-heading { margin-bottom:20px; }
+.login-form-heading h2 { margin:0 0 6px; font-size:22px; letter-spacing:-.04em; }
+.login-form-heading p { margin:0; color:var(--muted); font-size:13px; line-height:1.5; }
+.demo-account-panel { margin-top:22px; padding-top:18px; border-top:1px solid var(--line); }
+.demo-account-heading { display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:8px; color:var(--ink); font-size:12px; font-weight:750; }
+.demo-account-heading small { color:var(--faint); font-size:10px; font-weight:500; }
+.demo-account-list { display:grid; gap:6px; }
+.demo-account { display:flex; align-items:center; gap:9px; width:100%; padding:8px 9px; border:1px solid transparent; border-radius:9px; background:transparent; color:var(--ink); text-align:left; cursor:pointer; }
+.demo-account:hover { border-color:var(--line); background:#faf9f5; }
+.demo-account:focus-visible { outline:3px solid rgba(15,118,110,.28); outline-offset:2px; }
+.demo-account-avatar { display:grid; place-items:center; flex:0 0 26px; width:26px; height:26px; border-radius:8px; background:#e5f3ef; color:var(--signal); font-size:12px; font-weight:800; }
+.demo-account-copy { display:grid; min-width:0; flex:1; gap:1px; }
+.demo-account-copy strong { font-size:12px; }
+.demo-account-copy small,.demo-account-copy em { overflow:hidden; color:var(--muted); font-size:10px; font-style:normal; text-overflow:ellipsis; white-space:nowrap; }
+.demo-account-copy em { color:var(--faint); }
+.demo-account-action { color:var(--signal); font-size:11px; font-weight:750; }
