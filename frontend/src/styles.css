@@ -221,3 +221,20 @@ code { color:var(--signal); font:11px 'Cascadia Mono',Consolas,monospace; }
   .admin-shell.is-diagnosis .main-panel { height:auto; min-height:0; overflow:visible; }
   .admin-shell.is-diagnosis .timeline { overflow:visible; }
 }
+
+/* Shared list pagination */
+.pagination-bar { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-top:14px; padding:5px 2px; color:var(--muted); font-size:12px; }
+.pagination-options { display:flex; align-items:center; gap:16px; }
+.pagination-options label { display:flex; align-items:center; gap:7px; white-space:nowrap; }
+.pagination-options select { min-height:34px; padding:0 8px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--ink); font-size:12px; }
+.pagination-controls { display:flex; align-items:center; gap:4px; }
+.pagination-button { display:grid; place-items:center; min-width:31px; height:31px; padding:0 7px; border:1px solid transparent; border-radius:8px; background:transparent; color:var(--muted); font-size:12px; }
+.pagination-button:hover:not(:disabled) { border-color:var(--line); background:var(--panel); color:var(--ink); }
+.pagination-button.active { border-color:var(--signal); background:var(--signal); color:#fff; font-weight:750; }
+.pagination-button:disabled { opacity:.38; cursor:not-allowed; }
+.pagination-arrow { font-size:20px; line-height:1; }
+.pagination-ellipsis { display:grid; place-items:center; width:20px; color:var(--faint); }
+.table-empty { padding:30px 16px; color:var(--muted); text-align:center; }
+.directory-toolbar { margin:14px 0 4px; }
+.directory-toolbar input { max-width:none; }
+@media (max-width:640px) { .pagination-bar { align-items:flex-start; flex-direction:column; }.pagination-options { width:100%; justify-content:space-between; }.pagination-summary { font-size:11px; } }
