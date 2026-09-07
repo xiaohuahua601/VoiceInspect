@@ -238,3 +238,16 @@ code { color:var(--signal); font:11px 'Cascadia Mono',Consolas,monospace; }
 .directory-toolbar { margin:14px 0 4px; }
 .directory-toolbar input { max-width:none; }
 @media (max-width:640px) { .pagination-bar { align-items:flex-start; flex-direction:column; }.pagination-options { width:100%; justify-content:space-between; }.pagination-summary { font-size:11px; } }
+/* Centered knowledge upload control */
+.upload-intro { text-align:center; }
+.upload-intro p { max-width:620px; margin-right:auto; margin-left:auto; }
+.upload-form-grid { align-items:end; }
+.upload-form-grid label { text-align:center; justify-items:center; }
+.upload-form-grid .version-input { text-align:center; }
+.file-field { min-width:0; }
+.file-picker { display:flex; align-items:center; justify-content:center; gap:10px; width:100%; min-height:40px; padding:4px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--muted); font-size:12px; font-weight:500; }
+.file-picker:focus-within { outline:3px solid rgba(15,118,110,.28); outline-offset:2px; border-color:var(--signal); }
+.file-picker-button { display:inline-flex; align-items:center; justify-content:center; min-height:30px; padding:0 12px; border-radius:6px; background:var(--signal-soft); color:#11635d; font-weight:750; white-space:nowrap; }
+.file-picker-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.upload-submit { justify-self:center; min-width:180px; }
+@media (max-width:480px) { .file-picker { justify-content:flex-start; }.upload-submit { width:100%; } }
