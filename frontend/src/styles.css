@@ -320,3 +320,6 @@ code { color:var(--signal); font:11px 'Cascadia Mono',Consolas,monospace; }
 .assignment-controls select { flex:1; min-width:0; }
 .assignment-note { width:100%; resize:vertical; }
 .read-only-notice { margin:18px 0; padding:11px 13px; border:1px solid var(--line); border-radius:9px; color:var(--muted); background:#faf9f5; font-size:13px; line-height:1.6; }
+.knowledge-source { display:grid; gap:5px; margin:18px 0; padding:13px 15px; border:1px solid var(--line); border-radius:10px; background:#f8fbfa; color:var(--muted); font-size:13px; }
+.knowledge-source p { margin:0; }
+.knowledge-source a { color:var(--signal); }

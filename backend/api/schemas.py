@@ -24,6 +24,12 @@ class KnowledgeTextRequest(BaseModel):
     content: str = Field(min_length=1, max_length=500_000)
     version: str = Field(default="1", min_length=1, max_length=80)
     device_model: str | None = Field(default=None, max_length=120)
+    source_url: str | None = Field(default=None, max_length=500)
+    publisher: str | None = Field(default=None, max_length=160)
+    license: str | None = Field(default=None, max_length=160)
+    document_type: str | None = Field(default=None, max_length=80)
+    language: str = Field(default='zh-CN', max_length=20)
+    applicability: str | None = Field(default=None, max_length=500)
 
 
 class UserView(BaseModel):

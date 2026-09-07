@@ -378,7 +378,7 @@ def knowledge_list(status: str | None = None, user: User = Depends(get_current_u
     q = select(KnowledgeDoc).order_by(desc(KnowledgeDoc.created_at))
     if user.role != UserRole.SYSTEM_ADMIN.value: q = q.where(KnowledgeDoc.organization_id == user.organization_id)
     if status: q = q.where(KnowledgeDoc.status == status)
-    return [{"id": x.id, "name": x.name, "version": x.version, "status": x.status, "organization_id": x.organization_id, "failure_reason": x.failure_reason, "chunks": len(x.chunks), "created_at": x.created_at} for x in db.scalars(q).all()]
+    return [{"id": x.id, "name": x.name, "version": x.version, "status": x.status, "organization_id": x.organization_id, "failure_reason": x.failure_reason, "metadata": x.metadata_json or {}, "chunks": len(x.chunks), "created_at": x.created_at} for x in db.scalars(q).all()]
 
 
 @router.get("/knowledge/documents/{document_id}")
@@ -424,7 +424,7 @@ def knowledge_retry(document_id: str, user: User = Depends(require_roles(UserRol
 def report_faults(payload: ReportPayload, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     if payload.format not in {"csv", "pdf"}: raise AppError("REPORT_FORMAT_INVALID", "仅支持 PDF 或 CSV", 422, False, "report")
     ids = {x.id for x in visible_devices(user, db)}
-    rows = [_fault_view(x) for x in db.scalars(select(FaultRecord).where(FaultRecord.device_id.in_(ids)).order_by(desc(FaultRecord.created_at)).limit(500)).all()]
+    rows = [_fault_view(x, db) for x in db.scalars(select(FaultRecord).where(FaultRecord.device_id.in_(ids)).order_by(desc(FaultRecord.created_at)).limit(500)).all()]
     out = io.StringIO()
     if rows:
         writer = csv.DictWriter(out, fieldnames=list(rows[0].keys())); writer.writeheader(); writer.writerows(rows)

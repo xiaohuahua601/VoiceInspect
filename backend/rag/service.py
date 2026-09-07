@@ -51,7 +51,7 @@ class KnowledgeService:
     def __init__(self, provider: OllamaProvider):
         self.provider = provider
 
-    async def ingest_text(self, db: Session, name: str, content: str, version: str = "1", device_model: str | None = None, organization_id: str | None = None) -> KnowledgeDoc:
+    async def ingest_text(self, db: Session, name: str, content: str, version: str = "1", device_model: str | None = None, organization_id: str | None = None, source_metadata: dict | None = None) -> KnowledgeDoc:
         encoded = content.encode("utf-8")
         digest = hashlib.sha256(encoded).hexdigest()
         existing = db.scalar(select(KnowledgeDoc).where(KnowledgeDoc.sha256 == digest, KnowledgeDoc.version == version))
@@ -59,7 +59,8 @@ class KnowledgeService:
             return existing
         pieces = chunk_text(content)
         vectors = await self.provider.embed(pieces) if pieces else []
-        doc = KnowledgeDoc(name=name, version=version, sha256=digest, status="indexed", organization_id=organization_id, metadata_json={"device_model": device_model})
+        metadata = {"device_model": device_model, **(source_metadata or {})}
+        doc = KnowledgeDoc(name=name, version=version, sha256=digest, status="indexed", organization_id=organization_id, metadata_json=metadata)
         db.add(doc)
         db.flush()
         for index, (piece, vector) in enumerate(zip(pieces, vectors)):
@@ -86,6 +87,12 @@ class KnowledgeService:
                 "section": chunk.section,
                 "quote_text": chunk.text,
                 "score": round(score, 4),
+                "source_url": (doc.metadata_json or {}).get("source_url"),
+                "publisher": (doc.metadata_json or {}).get("publisher"),
+                "license": (doc.metadata_json or {}).get("license"),
+                "document_type": (doc.metadata_json or {}).get("document_type"),
+                "language": (doc.metadata_json or {}).get("language"),
+                "applicability": (doc.metadata_json or {}).get("applicability"),
             }
             for score, chunk, doc in scored[: max(1, min(top_k, 12))]
             if score >= 0.15

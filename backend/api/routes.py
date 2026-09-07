@@ -127,14 +127,14 @@ async def create_message(payload: MessageCreateRequest, user: User = Depends(get
 
 @router.post("/knowledge/text")
 async def create_knowledge_text(payload: KnowledgeTextRequest, user: User = Depends(require_roles(UserRole.KNOWLEDGE_ADMIN, UserRole.SYSTEM_ADMIN)), db: Session = Depends(get_db)) -> dict:
-    document = await knowledge.ingest_text(db, payload.name, payload.content, payload.version, payload.device_model, user.organization_id)
+    document = await knowledge.ingest_text(db, payload.name, payload.content, payload.version, payload.device_model, user.organization_id, {"source_url": payload.source_url, "publisher": payload.publisher, "license": payload.license, "document_type": payload.document_type, "language": payload.language, "applicability": payload.applicability})
     db.add(AuditEvent(trace_id=str(uuid4()), actor_id=user.id, action="knowledge.indexed", target=document.id, details={"name": document.name, "chunks": len(document.chunks)}))
     db.commit()
-    return {"id": document.id, "name": document.name, "version": document.version, "status": document.status, "chunks": len(document.chunks)}
+    return {"id": document.id, "name": document.name, "version": document.version, "status": document.status, "chunks": len(document.chunks), "metadata": document.metadata_json or {}}
 
 
 @router.post("/knowledge/documents")
-async def upload_knowledge_document(file: UploadFile = File(...), version: str = Form("1"), device_model: str | None = Form(None), user: User = Depends(require_roles(UserRole.KNOWLEDGE_ADMIN, UserRole.SYSTEM_ADMIN)), db: Session = Depends(get_db)) -> dict:
+async def upload_knowledge_document(file: UploadFile = File(...), version: str = Form("1"), device_model: str | None = Form(None), source_url: str | None = Form(None), publisher: str | None = Form(None), license: str | None = Form(None), document_type: str | None = Form(None), language: str = Form("zh-CN"), applicability: str | None = Form(None), user: User = Depends(require_roles(UserRole.KNOWLEDGE_ADMIN, UserRole.SYSTEM_ADMIN)), db: Session = Depends(get_db)) -> dict:
     suffix = Path(file.filename or "").suffix.lower()
     allowed = {".txt", ".docx", ".pdf"}
     if suffix not in allowed:
@@ -147,10 +147,10 @@ async def upload_knowledge_document(file: UploadFile = File(...), version: str =
     path.write_bytes(content)
     try:
         extracted = knowledge.extract_text(path)
-        document = await knowledge.ingest_text(db, file.filename or safe_name, extracted, version, device_model, user.organization_id)
+        document = await knowledge.ingest_text(db, file.filename or safe_name, extracted, version, device_model, user.organization_id, {"source_url": source_url, "publisher": publisher, "license": license, "document_type": document_type, "language": language, "applicability": applicability})
         db.add(AuditEvent(trace_id=str(uuid4()), actor_id=user.id, action="knowledge.uploaded", target=document.id, details={"original_name": file.filename, "size": len(content)}))
         db.commit()
-        return {"id": document.id, "name": document.name, "version": document.version, "status": document.status, "chunks": len(document.chunks)}
+        return {"id": document.id, "name": document.name, "version": document.version, "status": document.status, "chunks": len(document.chunks), "metadata": document.metadata_json or {}}
     finally:
         path.unlink(missing_ok=True)
 
@@ -163,4 +163,4 @@ def get_citation(chunk_id: str, _: User = Depends(get_current_user), db: Session
     if not row:
         raise AppError("CITATION_NOT_FOUND", "引用不存在", 404, False, "rag")
     document = db.get(KnowledgeDoc, row.doc_id)
-    return {"citation_id": row.id, "document": document.name if document else "未知文档", "version": document.version if document else None, "page": row.page, "section": row.section, "quote_text": row.text}
+    return {"citation_id": row.id, "document": document.name if document else "未知文档", "version": document.version if document else None, "page": row.page, "section": row.section, "quote_text": row.text, "metadata": document.metadata_json if document else {}}
