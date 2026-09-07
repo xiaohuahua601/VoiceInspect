@@ -1,5 +1,6 @@
 from backend.core.security import create_access_token, decode_access_token, hash_password, verify_password
 from backend.rag.service import chunk_text, cosine
+from backend.providers.vision import VisionPayload
 
 
 def test_password_hash_round_trip():
@@ -21,3 +22,10 @@ def test_chunking_and_cosine():
     assert len(chunks) > 1
     assert cosine([1.0, 0.0], [1.0, 0.0]) == 1.0
     assert cosine([1.0, 0.0], [0.0, 1.0]) == 0.0
+
+
+def test_vision_payload_normalizes_structured_items():
+    payload = VisionPayload(
+        uncertainties=[{"type": "不确定", "description": "无法确认是否存在泄漏"}],
+    )
+    assert payload.uncertainties == ["不确定：无法确认是否存在泄漏"]

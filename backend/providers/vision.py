@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 import httpx
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from backend.core.config import get_settings
 from backend.providers.contracts import ProviderHealth, VisionObservation
@@ -20,6 +20,24 @@ class VisionPayload(BaseModel):
     uncertainties: list[str] = Field(default_factory=list)
     safety_flags: list[str] = Field(default_factory=list)
 
+    @field_validator("observations", "suspected_anomalies", "uncertainties", "safety_flags", mode="before")
+    @classmethod
+    def normalize_items(cls, value: object) -> list[str]:
+        """Keep the external contract string-based while accepting safe object details."""
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("视觉列表字段必须是数组")
+        normalized: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                normalized.append(item)
+            elif isinstance(item, dict):
+                parts = [str(item[key]) for key in ("type", "description", "detail", "reason") if item.get(key)]
+                normalized.append("：".join(parts) if parts else json.dumps(item, ensure_ascii=False))
+            else:
+                raise ValueError("视觉列表元素必须是字符串或对象")
+        return normalized
 
 class OllamaVision:
     def __init__(self) -> None:

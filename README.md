@@ -1,6 +1,6 @@
 # VoiceInspect
 
-VoiceInspect 是一个本地优先的工业设备现场多模态诊断助手。当前仓库包含 P0/P1 的真实可运行基线：本地账号、SQLite 持久化、设备和会话管理、Ollama 文本回答、知识文档导入、向量检索、引用展示和审计记录。
+VoiceInspect 是一个本地优先的工业设备现场多模态诊断助手。当前仓库已实现 P0-P5 的本地能力骨架：账号、SQLite 持久化、文本/RAG、语音、视觉、TTS 适配器、受控工具、确认幂等和审计。
 
 ## 当前能力状态
 
@@ -10,8 +10,8 @@ VoiceInspect 是一个本地优先的工业设备现场多模态诊断助手。�
 | PDF/DOCX/TXT 知识导入 | 已实现 |
 | Embedding 与本地检索 | 已实现，SQLite 持久化向量 |
 | 引用展示与资料不足提示 | 已实现 |
-| 语音 STT | 已接入 faster-whisper Provider；权重需本地下载 |
-| 视觉 VLM | 已接入 Ollama JSON Provider；需配置已安装的视觉模型 |
+| 语音 STT | 已接入 faster-whisper Provider；本机 small 权重已完成真实转写验证，容器首次使用需准备权重 |
+| 视觉 VLM | 已接入严格 JSON Ollama Provider；本机已验证 qwen2.5vl:3b |
 | TTS | 已接入 Windows SAPI Provider；容器环境按能力状态降级 |
 | 写工具与确认令牌 | 已实现草稿、确认、幂等故障记录和审计 |
 
@@ -59,7 +59,7 @@ npm run build
 npm run verify:premium
 ```
 
-完整 MVP 还需要补齐本地 STT、VLM、TTS 并执行需求文档中的 AC-01 至 AC-08。任何未实际执行的模型评测或浏览器 E2E 都不会标记为通过。
+当前自动化回归已覆盖 8 个 Python 测试、前端构建和 UX 契约；AC-02/03/04/08 的正式数据集评测、性能基线和浏览器 E2E 仍需单独执行。任何未实际执行的项目都不会标记为通过。
 ## P2-P5 能力配置
 
 语音依赖已经写入 pyproject.toml 的 audio extra。
@@ -68,7 +68,7 @@ npm run verify:premium
 
 faster-whisper 首次使用需要下载 STT_MODEL_SIZE 对应权重。当前默认值是 small，下载失败时 API 会保留文字/图片能力并返回 STT_UNAVAILABLE 降级状态。
 
-视觉能力通过 Ollama 配置。设置 OLLAMA_VISION_MODEL 为已安装的视觉模型标签，并使用 ollama list 检查。不要把文本模型当作视觉模型。GET /api/v1/capabilities 会检查模型标签是否存在；本轮环境中没有完成 6GB 视觉模型下载，因此视觉能力仍显示为不可用。
+视觉能力通过 Ollama 配置。本机当前使用并验证 OLLAMA_VISION_MODEL=qwen2.5vl:3b；使用 ollama list 检查模型标签，不要把文本模型当作视觉模型。GET /api/v1/capabilities 会检查模型标签是否存在。
 
 ## 新增业务接口
 
