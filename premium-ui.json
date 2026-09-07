@@ -1,0 +1,21 @@
+{
+  "profile": "product-admin",
+  "sourceRoots": ["frontend/src"],
+  "locale": "zh-CN",
+  "canonicalMap": "UX-CONTRACT.md",
+  "requiredCapabilities": ["Form", "Scrollbar", "Toast", "CRUD"],
+  "ownership": {
+    "Form": "native",
+    "Scrollbar": "global-stylesheet", "Select/Listbox": "native"
+  },
+  "requiredCommands": ["unit", "build", "premium"],
+  "commands": {
+    "unit": "npm run test:unit",
+    "build": "npm run build",
+    "premium": "npm run verify:premium"
+  },
+  "evidence": {
+    "crudFullFlow": "tests/e2e/diagnosis.spec.ts",
+    "failurePaths": "tests/e2e/failure-paths.spec.ts"
+  }
+}
