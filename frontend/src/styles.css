@@ -290,3 +290,19 @@ code { color:var(--signal); font:11px 'Cascadia Mono',Consolas,monospace; }
   .admin-shell.is-diagnosis .sidebar .session-section { flex:none; }
   .admin-shell.is-diagnosis .sidebar .session-list { overflow:visible; padding-right:0; }
 }
+/* Composer input hierarchy */
+.admin-shell.is-diagnosis .composer-entry { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:stretch; gap:12px; }
+.admin-shell.is-diagnosis .composer-entry textarea { min-height:72px; }
+.admin-shell.is-diagnosis .composer-submit { min-width:122px; align-self:stretch; }
+.admin-shell.is-diagnosis .composer-actions { align-items:center; }
+.input-tool-button { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:36px; padding:0 12px; border:1px solid var(--line); border-radius:9px; background:var(--panel); color:var(--ink); font-size:12px; font-weight:650; }
+.input-tool-button:hover:not(:disabled) { border-color:var(--signal); color:var(--signal); background:var(--signal-soft); }
+.input-tool-button:disabled { color:var(--faint); background:#f3f1eb; }
+.input-tool-button.recording { border-color:var(--danger); background:var(--danger-soft); color:var(--danger); }
+.input-tool-button .tool-icon { color:var(--signal); font-size:14px; line-height:1; }
+.input-tool-button.recording .tool-icon { color:var(--danger); }
+.input-tool-button small { margin-left:2px; color:inherit; font-variant-numeric:tabular-nums; }
+@media (max-width:700px) {
+  .admin-shell.is-diagnosis .composer-entry { grid-template-columns:1fr; }
+  .admin-shell.is-diagnosis .composer-submit { justify-self:end; min-height:42px; }
+}
