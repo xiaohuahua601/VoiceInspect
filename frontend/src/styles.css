@@ -62,6 +62,11 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 .context-strip>div:first-child { display:flex; align-items:center; gap:10px; }
 .strip-label { color:var(--muted); font-size:12px; }
 .context-strip select { min-width:220px; padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--ink); font-size:12px; }
+.context-actions { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
+.records-dialog { width:min(100%, 42rem); max-height:80vh; overflow:auto; }
+.record-list { display:grid; gap:8px; max-height:18rem; overflow:auto; margin-top:1rem; }
+.record-row { display:grid; gap:4px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); }
+.record-row small { color:var(--text-muted); line-height:1.45; }
 .strip-note { display:inline-flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; }
 .status-dot.is-ok { background:var(--signal); box-shadow:none; }
 .timeline { width:min(900px,calc(100% - 96px)); flex:1; margin:0 auto; padding:45px 0 150px; }
