@@ -1,0 +1,35 @@
+[
+  {
+    "path": "air-receiver-safety.txt",
+    "name": "通用空压机储气罐与压力安全",
+    "version": "2026.09",
+    "source_url": "https://www.osha.gov/laws-regs/regulations/standardnumber/1910/1910.169",
+    "publisher": "U.S. OSHA",
+    "license": "公开法规资料摘要；保留来源链接",
+    "document_type": "official_safety_guidance",
+    "language": "zh-CN",
+    "applicability": "通用空压机与储气罐安全；非 COMPRESSOR-A 专用"
+  },
+  {
+    "path": "compressed-air-safety.txt",
+    "name": "通用压缩空气系统安全",
+    "version": "2026.09",
+    "source_url": "https://www.osha.gov/compressed-gas-equipment/standards",
+    "publisher": "U.S. OSHA",
+    "license": "公开安全规范摘要；保留来源链接",
+    "document_type": "official_safety_guidance",
+    "language": "zh-CN",
+    "applicability": "通用压缩空气系统；非 COMPRESSOR-A 专用"
+  },
+  {
+    "path": "air-compressor-maintenance-basics.txt",
+    "name": "通用空压机维护与异常排查框架",
+    "version": "2026.09",
+    "source_url": "https://www.osha.gov/compressed-gas-equipment/standards",
+    "publisher": "VoiceInspect curated guide",
+    "license": "项目自有整理；依据公开安全资料",
+    "document_type": "curated_maintenance_guide",
+    "language": "zh-CN",
+    "applicability": "通用分诊框架；必须结合具体厂商手册"
+  }
+]
