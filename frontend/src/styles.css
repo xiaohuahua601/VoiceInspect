@@ -279,3 +279,14 @@ code { color:var(--signal); font:11px 'Cascadia Mono',Consolas,monospace; }
   .admin-shell.is-diagnosis .topbar { padding:18px 20px 15px; }
   .admin-shell.is-diagnosis .context-strip { padding-right:20px; padding-left:20px; }
 }
+/* Fixed diagnosis session heading */
+.admin-shell.is-diagnosis .sidebar { overflow:hidden; }
+.admin-shell.is-diagnosis .sidebar .session-section { display:flex; flex:1 1 auto; flex-direction:column; min-height:0; }
+.admin-shell.is-diagnosis .sidebar .session-list { flex:1 1 auto; min-height:0; padding-right:3px; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; scrollbar-gutter:stable; }
+.admin-shell.is-diagnosis .sidebar .session-list::-webkit-scrollbar { width:8px; }
+.admin-shell.is-diagnosis .sidebar .session-list::-webkit-scrollbar-thumb { border:2px solid var(--panel); border-radius:999px; background:#b8c4bf; }
+@media (max-width:760px) {
+  .admin-shell.is-diagnosis .sidebar { overflow:visible; }
+  .admin-shell.is-diagnosis .sidebar .session-section { flex:none; }
+  .admin-shell.is-diagnosis .sidebar .session-list { overflow:visible; padding-right:0; }
+}
