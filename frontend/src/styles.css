@@ -158,10 +158,10 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 .list-row strong { font-size:13px; }
 .list-row small { margin-top:4px; color:var(--muted); font-size:11px; }
 .static-row { padding:11px 0; }
-.severity-dot,.timeline-dot { display:inline-block; width:9px; height:9px; flex:0 0 auto; border-radius:50%; background:var(--faint); }
-.severity-high,.severity-critical { background:var(--danger); }.severity-medium { background:var(--amber); }.severity-low { background:var(--signal); }
-.pill { display:inline-flex; align-items:center; width:max-content; padding:4px 8px; border-radius:999px; background:#eeece5; color:var(--muted); font-size:11px; white-space:nowrap; }
-.pill-success,.pill-published { background:var(--signal-soft); color:#11635d; }.pill-new,.pill-indexed { background:#e7f0f2; color:#245b67; }.pill-confirmed,.pill-in_progress { background:var(--amber-soft); color:#8a4b0a; }.pill-pending_verification,.pill-warning { background:var(--amber-soft); color:#8a4b0a; }.pill-closed { background:#e7ebe8; color:#56625f; }.pill-failed { background:var(--danger-soft); color:var(--danger); }
+.severity-dot,.timeline-dot { display:inline-block; width:9px; height:9px; flex:0 0 auto; border-radius:50%; background:var(--faint); }.severity-dot.severity-high,.severity-dot.severity-critical { background:var(--danger); }.severity-dot.severity-medium { background:var(--amber); }.severity-dot.severity-low { background:var(--signal); }
+
+.pill { display:inline-flex; align-items:center; gap:6px; width:max-content; padding:4px 9px 4px 8px; border:1px solid var(--line); border-radius:999px; background:transparent; color:var(--muted); font-size:11px; white-space:nowrap; }.pill::before { width:5px; height:5px; flex:0 0 auto; border-radius:50%; background:currentColor; content:""; }
+.pill-success,.pill-published { border-color:#8ccfc1; color:#11635d; }.pill-new,.pill-indexed { border-color:#9fc7d0; color:#245b67; }.pill-confirmed,.pill-in_progress,.pill-pending_verification,.pill-warning { border-color:#e8bd7a; color:#8a4b0a; }.pill-closed { border-color:#b9c3be; color:#56625f; }.pill-failed { border-color:#e1a39b; color:var(--danger); }
 .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:13px; }
 .toolbar input,.toolbar select,.form-grid input,.form-grid select,.provider-row input { min-height:40px; padding:0 11px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); }
 .toolbar input { flex:1; max-width:430px; }
@@ -306,3 +306,9 @@ code { color:var(--signal); font:11px 'Cascadia Mono',Consolas,monospace; }
   .admin-shell.is-diagnosis .composer-entry { grid-template-columns:1fr; }
   .admin-shell.is-diagnosis .composer-submit { justify-self:end; min-height:42px; }
 }
+/* Status labels use outline and text, not filled blocks */
+.severity-label { display:inline-flex; align-items:center; gap:6px; color:var(--muted); font-size:12px; font-weight:650; white-space:nowrap; }
+.severity-label::before { width:7px; height:7px; flex:0 0 auto; border-radius:50%; background:currentColor; content:""; }
+.severity-label.severity-high,.severity-label.severity-critical { color:var(--danger); }
+.severity-label.severity-medium { color:var(--amber); }
+.severity-label.severity-low { color:var(--signal); }
