@@ -392,7 +392,7 @@ def knowledge_detail(document_id: str, user: User = Depends(get_current_user), d
     item = db.get(KnowledgeDoc, document_id)
     if not item or (user.role != UserRole.SYSTEM_ADMIN.value and item.organization_id != user.organization_id):
         raise AppError("KNOWLEDGE_NOT_FOUND", "知识文档不存在或��权访问", 404, False, "rag")
-    return {"id": item.id, "name": item.name, "version": item.version, "status": item.status, "failure_reason": item.failure_reason,
+    return {"id": item.id, "name": item.name, "version": item.version, "status": item.status, "failure_reason": item.failure_reason, "metadata": item.metadata_json or {},
             "chunks": [{"id": x.id, "page": x.page, "section": x.section, "text": x.text[:500], "device_model": x.device_model} for x in item.chunks]}
 
 

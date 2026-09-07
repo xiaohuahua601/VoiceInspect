@@ -33,7 +33,7 @@ npm install
 npm run dev
 ```
 
-打开 http://127.0.0.1:5173，登录页支持四个本地演示账户一键填充。首次启动会创建 SQLite 数据库和 `A-01` 演示设备。
+打开 http://127.0.0.1:5173，登录页支持四个本地演示账户一键填充。首次启动会创建 SQLite 数据库和四类演示设备：空压机 A-01、液压试验台 H-01、驱动电机 M-01、通用加工设备 P-01。
 
 ## 知识文档导入
 
@@ -47,6 +47,23 @@ Content-Type: application/json
 {"name":"空压机手册","content":"...","version":"1","device_model":"COMPRESSOR-A"}
 ```
 
+## 开源数据集资产
+
+项目提供 `data/datasets/catalog.json` 和 `scripts/import_open_datasets.py`。当前已登记 MetroPT-3 空压机、AI4I 2020 工业设备、液压系统、无位置传感器驱动和 IIT Kanpur 空压机声学数据集五个来源；前四个 UCI 数据集明确标注 CC BY 4.0，IIT Kanpur 数据集因下载页未声明标准开源许可证只登记来源，不自动复制。
+
+导入数据集卡片并发布到 RAG：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\import_open_datasets.py --publish
+```
+
+下载体量较小且许可明确的数据集到本地 `data/datasets/raw/`（原始文件被 Git 忽略）：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\import_open_datasets.py --download --datasets ai4i-2020
+```
+
+数据集卡片参与问答检索，原始 CSV/信号/音频文件不会被当作维修手册。要把原始数据用于训练、异常检测或图表分析，需要后续的数据分析模块；知识卡片中的来源、许可证、适用边界和 SHA-256 用于审计和复现。
 ## Docker
 
 Docker 方案会将 SQLite 和本地数据挂载到 `data/`。Ollama 默认运行在宿主机，容器内必须使用 `host.docker.internal`，不能使用容器内的 `localhost`。模型权重、密码和 `.env` 不会打包进镜像。
@@ -59,7 +76,7 @@ npm run build
 npm run verify:premium
 ```
 
-当前自动化回归已覆盖 8 个 Python 测试、前端构建和 UX 契约；AC-02/03/04/08 的正式数据集评测、性能基线和浏览器 E2E 仍需单独执行。任何未实际执行的项目都不会标记为通过。
+当前自动化回归已覆盖 14 个 Python 测试、前端构建和 UX 契约；AC-02/03/04/08 的正式数据集评测、性能基线和浏览器 E2E 仍需单独执行。任何未实际执行的项目都不会标记为通过。
 ## P2-P5 能力配置
 
 语音依赖已经写入 pyproject.toml 的 audio extra。
@@ -126,10 +143,10 @@ faster-whisper 首次使用需要下载 STT_MODEL_SIZE 对应权重。当前默�
 
 已实际验证：
 
-- 后端：8 项 pytest 通过
+- 后端：14 项 pytest 通过
 - Alembic：check 无待生成迁移
 - 前端：TypeScript/Vite 构建通过
-- 前端单元测试：3 项通过
+- 前端单元测试：6 项通过
 - Docker：API 与 Web 镜像构建、启动，API 健康检查通过
 - API：四角色登录、组织范围设备、故障确认幂等、非法状态转换、Provider 健康、CSV/PDF 下载通过
 

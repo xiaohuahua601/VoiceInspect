@@ -21,3 +21,4 @@ data/exports/*
 premium-audit.json
 
 *.egg-info/
+data/datasets/raw/*

@@ -168,6 +168,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 .toolbar input { flex:1; max-width:430px; }
 .toolbar select { min-width:160px; }
 .table-wrap { overflow:auto; border:1px solid var(--line); border-radius:14px; background:var(--panel); }
+.source-type { display:inline-flex; align-items:center; min-height:24px; padding:0 8px; border:1px solid #b8d6d0; border-radius:999px; color:#17655e; background:transparent; font-size:12px; white-space:nowrap; }
 table { width:100%; border-collapse:collapse; min-width:720px; }
 th,td { padding:14px 16px; border-bottom:1px solid #ebe7de; text-align:left; font-size:12px; white-space:nowrap; }
 th { color:var(--muted); background:#faf8f2; font:700 10px 'Cascadia Mono',Consolas,monospace; letter-spacing:.06em; text-transform:uppercase; }

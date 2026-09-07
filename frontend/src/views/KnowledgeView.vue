@@ -21,6 +21,15 @@ const pages = computed(() => Math.max(1, Math.ceil(rows.value.length / pageSize.
 const pagedRows = computed(() => rows.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
 const rangeStart = computed(() => rows.value.length ? (page.value - 1) * pageSize.value + 1 : 0)
 const rangeEnd = computed(() => Math.min(page.value * pageSize.value, rows.value.length))
+function documentTypeLabel(doc: KnowledgeDoc | any) {
+  const type = doc.metadata?.document_type
+  return type === 'dataset_card' ? '数据集卡片' : type === 'dataset_catalog_only' ? '数据集目录' : '现场资料'
+}
+function assetStatus(doc: KnowledgeDoc | any) {
+  if (doc.metadata?.document_type === 'dataset_catalog_only') return '仅登记来源'
+  const status = doc.metadata?.asset?.status
+  return status === 'downloaded' ? '原始资产已下载' : '知识卡片'
+}
 
 async function load() {
   loading.value = true
@@ -71,7 +80,7 @@ onMounted(load)
     </template>
     <template v-else>
       <div class="upload-panel"><div class="upload-intro"><span class="eyebrow">IMPORT DOCUMENT</span><h3>上传现场知识</h3><p>支持 TXT、DOCX、PDF。上传后先解析和索引，再由知识管理员发布。</p></div><div class="form-grid upload-form-grid"><label>版本<input v-model="version" class="version-input"></label><label>来源 URL（可选）<input v-model="sourceUrl" placeholder="https://…"></label><label>发布机构（可选）<input v-model="publisher" placeholder="例如 U.S. OSHA"></label><label>适用范围（可选）<input v-model="applicability" placeholder="通用资料 / 具体型号"></label><label class="file-field">文件<span class="file-picker"><span class="file-picker-button">选择文件</span><span class="file-picker-name">{{ file?.name || '未选择任何文件' }}</span><input class="visually-hidden" type="file" accept=".txt,.docx,.pdf" @change="file = ($event.target as HTMLInputElement).files?.[0] || null"></span></label></div><button class="button primary upload-submit" type="button" :disabled="!file || busy" @click="upload">{{ busy ? '处理中…' : '上传并解析' }}</button></div>
-      <div class="table-wrap"><table><thead><tr><th>文档</th><th>版本</th><th>状态</th><th>适用范围</th><th>片段</th><th>创建时间</th><th></th></tr></thead><tbody><tr v-for="doc in pagedRows" :key="doc.id"><td><strong>{{ doc.name }}</strong><small>{{ doc.id.slice(0,8) }}</small></td><td>v{{ doc.version }}</td><td><span class="pill" :class="'pill-' + doc.status">{{ doc.status }}</span></td><td>{{ doc.metadata?.applicability || (doc.metadata?.device_model || '通用资料') }}</td><td>{{ doc.chunks }}</td><td>{{ new Date(doc.created_at).toLocaleString('zh-CN') }}</td><td><RouterLink class="text-link" :to="'/knowledge/' + doc.id">详情 →</RouterLink></td></tr><tr v-if="!pagedRows.length"><td colspan="7" class="table-empty">暂无文档，请导入第一份设备手册。</td></tr></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>文档</th><th>类型</th><th>版本</th><th>状态</th><th>适用范围</th><th>资产状态</th><th>片段</th><th>创建时间</th><th></th></tr></thead><tbody><tr v-for="doc in pagedRows" :key="doc.id"><td><strong>{{ doc.name }}</strong><small>{{ doc.id.slice(0,8) }}</small></td><td><span class="source-type">{{ documentTypeLabel(doc) }}</span></td><td>v{{ doc.version }}</td><td><span class="pill" :class="'pill-' + doc.status">{{ doc.status }}</span></td><td>{{ doc.metadata?.applicability || (doc.metadata?.device_model || '通用资料') }}</td><td>{{ assetStatus(doc) }}</td><td>{{ doc.chunks }}</td><td>{{ new Date(doc.created_at).toLocaleString('zh-CN') }}</td><td><RouterLink class="text-link" :to="'/knowledge/' + doc.id">详情 →</RouterLink></td></tr><tr v-if="!pagedRows.length"><td colspan="9" class="table-empty">暂无文档，请导入第一份设备手册或数据集卡片。</td></tr></tbody></table></div>
       <PaginationControl v-if="rows.length" v-model:page="page" v-model:page-size="pageSize" :pages="pages" :total="rows.length" :start="rangeStart" :end="rangeEnd" />
     </template>
   </section>

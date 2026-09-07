@@ -92,21 +92,51 @@ def seed_demo_data() -> None:
             db.flush()
         elif not knowledge_admin.organization_id:
             knowledge_admin.organization_id = organization.id
-        device = db.query(Device).filter(Device.code == "A-01").first()
-        if not device:
-            db.add(
-                Device(
-                    code="A-01",
-                    model="COMPRESSOR-A",
-                    name="空压机 A-01",
-                    metadata_json={"location": "演示产线"},
-                    organization_id=organization.id,
-                    site_id=site.id,
-                    line_id=line.id,
+        demo_devices = [
+            {
+                "code": "A-01",
+                "model": "COMPRESSOR-A",
+                "name": "空压机 A-01",
+                "metadata": {"location": "演示产线", "equipment_type": "compressor", "dataset_slugs": ["metropt-3", "iitk-air-compressor-acoustic"]},
+            },
+            {
+                "code": "H-01",
+                "model": "HYDRAULIC-SYSTEM-A",
+                "name": "液压试验台 H-01",
+                "metadata": {"location": "演示产线", "equipment_type": "hydraulic_system", "dataset_slugs": ["hydraulic-systems-447"]},
+            },
+            {
+                "code": "M-01",
+                "model": "MOTOR-DRIVE-A",
+                "name": "驱动电机 M-01",
+                "metadata": {"location": "演示产线", "equipment_type": "motor", "dataset_slugs": ["sensorless-drive-325"]},
+            },
+            {
+                "code": "P-01",
+                "model": "INDUSTRIAL-MACHINE-A",
+                "name": "通用加工设备 P-01",
+                "metadata": {"location": "演示产线", "equipment_type": "industrial_machine", "dataset_slugs": ["ai4i-2020"]},
+            },
+        ]
+        for item in demo_devices:
+            device = db.query(Device).filter(Device.code == item["code"]).first()
+            if not device:
+                db.add(
+                    Device(
+                        code=item["code"],
+                        model=item["model"],
+                        name=item["name"],
+                        metadata_json=item["metadata"],
+                        organization_id=organization.id,
+                        site_id=site.id,
+                        line_id=line.id,
+                    )
                 )
-            )
-        else:
-            device.organization_id, device.site_id, device.line_id = organization.id, site.id, line.id
+            else:
+                device.model = item["model"]
+                device.name = item["name"]
+                device.metadata_json = item["metadata"]
+                device.organization_id, device.site_id, device.line_id = organization.id, site.id, line.id
 
         for account in (operator, supervisor, knowledge_admin):
             if not db.query(UserScope).filter(UserScope.user_id == account.id).first():
