@@ -251,3 +251,31 @@ code { color:var(--signal); font:11px 'Cascadia Mono',Consolas,monospace; }
 .file-picker-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .upload-submit { justify-self:center; min-width:180px; }
 @media (max-width:480px) { .file-picker { justify-content:flex-start; }.upload-submit { width:100%; } }
+/* Harmonize diagnosis workspace layers */
+.admin-shell.is-diagnosis .workspace { grid-template-columns:220px minmax(0,1fr); background:var(--paper); }
+.admin-shell.is-diagnosis .sidebar { padding:24px 14px 16px; background:var(--panel); color:var(--ink); border-right:1px solid var(--line); }
+.admin-shell.is-diagnosis .sidebar .brand { display:none; }
+.admin-shell.is-diagnosis .sidebar .sidebar-section:not(.session-section) { display:none; }
+.admin-shell.is-diagnosis .sidebar .session-section { margin-top:0; }
+.admin-shell.is-diagnosis .sidebar .section-heading { padding:0 4px 12px; border-bottom:1px solid var(--line); }
+.admin-shell.is-diagnosis .sidebar .section-heading .eyebrow { margin:0; color:var(--muted); }
+.admin-shell.is-diagnosis .sidebar .icon-button { width:30px; height:30px; border-color:var(--line); color:var(--signal); background:var(--paper); }
+.admin-shell.is-diagnosis .sidebar .session-item { margin:5px 0 0; padding:10px 8px; color:var(--ink); }
+.admin-shell.is-diagnosis .sidebar .session-item:hover,
+.admin-shell.is-diagnosis .sidebar .session-item.selected { background:var(--signal-soft); }
+.admin-shell.is-diagnosis .sidebar .session-mark { background:#cdebe4; color:var(--signal); }
+.admin-shell.is-diagnosis .sidebar .session-item strong { max-width:145px; }
+.admin-shell.is-diagnosis .sidebar .session-item small { color:var(--muted); }
+.admin-shell.is-diagnosis .topbar { padding:22px 42px 18px; background:var(--paper); }
+.admin-shell.is-diagnosis .topbar h2 { font-size:20px; }
+.admin-shell.is-diagnosis .context-strip { padding-right:42px; padding-left:42px; }
+@media (max-width:760px) {
+  .admin-shell.is-diagnosis .workspace { display:block; }
+  .admin-shell.is-diagnosis .sidebar { border-right:0; border-bottom:1px solid var(--line); padding:12px 16px; }
+  .admin-shell.is-diagnosis .sidebar .session-section { display:block; }
+  .admin-shell.is-diagnosis .sidebar .section-heading { border-bottom:0; padding-bottom:7px; }
+  .admin-shell.is-diagnosis .sidebar .session-item { display:none; }
+  .admin-shell.is-diagnosis .sidebar .session-item.selected { display:flex; }
+  .admin-shell.is-diagnosis .topbar { padding:18px 20px 15px; }
+  .admin-shell.is-diagnosis .context-strip { padding-right:20px; padding-left:20px; }
+}
