@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     demo_operator_password: str = "change-me"
     demo_admin_username: str = "admin"
     demo_admin_password: str = "change-me-admin"
+    demo_supervisor_username: str = "supervisor"
+    demo_supervisor_password: str = "change-me-supervisor"
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", case_sensitive=False, extra="ignore")
 

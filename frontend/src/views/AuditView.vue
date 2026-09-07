@@ -1,0 +1,8 @@
+<script setup lang="ts">
+import { onMounted, ref } from 'vue'
+import { request, type AuditEvent } from '../api'
+const rows=ref<AuditEvent[]>([]);const query=ref('');const loading=ref(false);const error=ref('')
+async function load(){loading.value=true;try{rows.value=await request<AuditEvent[]>('/audit-events')}catch(e){error.value=e instanceof Error?e.message:'审计加载失败'}finally{loading.value=false}}
+onMounted(load)
+</script>
+<template><section class="page-view"><div class="page-heading"><div><span class="eyebrow">AUDIT TRAIL</span><h2>审计追踪</h2><p>记录登录、诊断、故障、知识和系统配置变更。</p></div><button class="button secondary" @click="load" :disabled="loading">刷新</button></div><p v-if="error" class="inline-error">{{ error }}</p><div class="toolbar"><input v-model="query" placeholder="按动作、对象或 trace_id 搜索" aria-label="搜索审计"></div><div class="table-wrap"><table><thead><tr><th>时间</th><th>动作</th><th>对象</th><th>trace_id</th><th>结果</th></tr></thead><tbody><tr v-for="event in rows.filter(x=>(x.action+(x.target||'')+x.trace_id).toLowerCase().includes(query.toLowerCase()))" :key="event.id"><td>{{ new Date(event.created_at).toLocaleString('zh-CN') }}</td><td><strong>{{ event.action }}</strong></td><td>{{ event.target||'—' }}</td><td><code>{{ event.trace_id.slice(0,12) }}</code></td><td><span class="pill pill-success">{{ event.result }}</span></td></tr></tbody></table><div v-if="!rows.length" class="empty-panel">暂无审计事件。</div></div></section></template>

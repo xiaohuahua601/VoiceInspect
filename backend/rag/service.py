@@ -51,7 +51,7 @@ class KnowledgeService:
     def __init__(self, provider: OllamaProvider):
         self.provider = provider
 
-    async def ingest_text(self, db: Session, name: str, content: str, version: str = "1", device_model: str | None = None) -> KnowledgeDoc:
+    async def ingest_text(self, db: Session, name: str, content: str, version: str = "1", device_model: str | None = None, organization_id: str | None = None) -> KnowledgeDoc:
         encoded = content.encode("utf-8")
         digest = hashlib.sha256(encoded).hexdigest()
         existing = db.scalar(select(KnowledgeDoc).where(KnowledgeDoc.sha256 == digest, KnowledgeDoc.version == version))
@@ -59,7 +59,7 @@ class KnowledgeService:
             return existing
         pieces = chunk_text(content)
         vectors = await self.provider.embed(pieces) if pieces else []
-        doc = KnowledgeDoc(name=name, version=version, sha256=digest, status="active", metadata_json={"device_model": device_model})
+        doc = KnowledgeDoc(name=name, version=version, sha256=digest, status="indexed", organization_id=organization_id, metadata_json={"device_model": device_model})
         db.add(doc)
         db.flush()
         for index, (piece, vector) in enumerate(zip(pieces, vectors)):
@@ -70,7 +70,7 @@ class KnowledgeService:
 
     async def search(self, db: Session, query: str, device_model: str | None = None, top_k: int = 5) -> list[dict]:
         query_vector = (await self.provider.embed([query]))[0]
-        stmt = select(KnowledgeChunk, KnowledgeDoc).join(KnowledgeDoc, KnowledgeDoc.id == KnowledgeChunk.doc_id).where(KnowledgeDoc.status == "active")
+        stmt = select(KnowledgeChunk, KnowledgeDoc).join(KnowledgeDoc, KnowledgeDoc.id == KnowledgeChunk.doc_id).where(KnowledgeDoc.status == "published")
         if device_model:
             stmt = stmt.where((KnowledgeChunk.device_model == device_model) | (KnowledgeChunk.device_model.is_(None)))
         rows = db.execute(stmt).all()

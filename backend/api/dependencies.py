@@ -1,6 +1,7 @@
 from collections.abc import Callable
 
 from fastapi import Depends, Header
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from backend.core.config import get_settings
@@ -8,7 +9,7 @@ from backend.core.errors import AppError
 from backend.core.security import decode_access_token
 from backend.domain.enums import UserRole
 from backend.repositories.db import get_db
-from backend.repositories.models import User
+from backend.repositories.models import Device, User, UserScope
 
 
 def get_current_user(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> User:
@@ -32,3 +33,27 @@ def require_roles(*roles: UserRole) -> Callable:
         return user
 
     return dependency
+
+def require_any_role(*roles: UserRole) -> Callable:
+    return require_roles(*roles)
+
+
+def user_can_access_device(user: User, device: Device, db: Session) -> bool:
+    if user.role == UserRole.SYSTEM_ADMIN.value:
+        return True
+    if not device.organization_id or user.organization_id != device.organization_id:
+        return False
+    scopes = db.scalars(select(UserScope).where(UserScope.user_id == user.id)).all()
+    if not scopes:
+        return True
+    return any(
+        scope.organization_id == device.organization_id
+        and (scope.site_id is None or scope.site_id == device.site_id)
+        and (scope.line_id is None or scope.line_id == device.line_id)
+        for scope in scopes
+    )
+
+
+def visible_devices(user: User, db: Session) -> list[Device]:
+    devices = db.scalars(select(Device).order_by(Device.code)).all()
+    return [device for device in devices if user_can_access_device(user, device, db)]

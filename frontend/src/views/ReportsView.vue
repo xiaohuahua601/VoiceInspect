@@ -1,0 +1,8 @@
+<script setup lang="ts">
+import { ref } from 'vue'
+import { fileUrl, getToken, request } from '../api'
+const format=ref<'csv'|'pdf'>('csv');const busy=ref(false);const error=ref('');const report=ref<any>(null)
+async function create(){busy.value=true;error.value='';try{report.value=await request('/reports/faults',{method:'POST',body:JSON.stringify({format:format.value})})}catch(e){error.value=e instanceof Error?e.message:'报告生成失败'}finally{busy.value=false}}
+function download(){if(!report.value)return;const a=document.createElement('a');a.href=fileUrl('/reports/'+report.value.id+'/download');a.download=report.value.file_name;a.click()}
+</script>
+<template><section class="page-view"><div class="page-heading"><div><span class="eyebrow">REPORT CENTER</span><h2>报告中心</h2><p>将当前授权范围内的故障数据导出为可归档文件。</p></div></div><p v-if="error" class="inline-error">{{ error }}</p><div class="report-grid"><section class="panel"><span class="eyebrow">FAULT REPORT</span><h3>生成故障报表</h3><p class="muted-text">报告包含设备、严重级别、状态、时间和处理负责人。</p><label class="radio-row"><input v-model="format" type="radio" value="csv"> CSV（适合数据处理）</label><label class="radio-row"><input v-model="format" type="radio" value="pdf"> PDF（适合归档阅读）</label><button class="button primary" :disabled="busy" @click="create">{{ busy?'生成中…':'生成报告' }}</button></section><section class="panel" :class="{ 'panel-muted': !report }"><span class="eyebrow">LATEST EXPORT</span><h3>{{ report ? report.file_name : '尚未生成报告' }}</h3><p>{{ report ? '报告已保存，可以下载。' : '生成后这里会出现下载入口。' }}</p><button v-if="report" class="button secondary" @click="download">下载文件 ↓</button></section></div></section></template>

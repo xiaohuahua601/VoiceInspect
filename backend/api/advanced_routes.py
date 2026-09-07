@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
-from backend.api.dependencies import get_current_user
+from backend.api.dependencies import get_current_user, user_can_access_device
 from backend.core.config import get_settings
 from backend.core.errors import AppError
 from backend.core.security import decode_access_token
@@ -268,13 +268,13 @@ def confirm_tool(token: str, user: User = Depends(get_current_user), db: Session
         device_id = args.get("device_id")
         symptom = str(args.get("symptom", "")).strip()
         idem = str(args.get("idempotency_key", "")).strip()
-        if not device_id or not symptom or not idem or not db.get(Device, device_id):
+        if not device_id or not symptom or not idem or not db.get(Device, device_id) or not user_can_access_device(user, db.get(Device, device_id), db):
             raise AppError("FAULT_ARGUMENTS_INVALID", "故障记录参数不完整或设备不存在", 422, False, "tool")
         existing = db.scalar(select(FaultRecord).where(FaultRecord.idempotency_key == idem))
         if existing:
             result = {"status": "already_exists", "fault_record_id": existing.id}
         else:
-            record = FaultRecord(device_id=device_id, symptom=symptom, severity=args.get("severity", "medium"), creator_id=user.id, idempotency_key=idem)
+            record = FaultRecord(device_id=device_id, session_id=draft.session_id, symptom=symptom, severity=args.get("severity", "medium"), creator_id=user.id, idempotency_key=idem)
             db.add(record)
             db.flush()
             result = {"status": "created", "fault_record_id": record.id}

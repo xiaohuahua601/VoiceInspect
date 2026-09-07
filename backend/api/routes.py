@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.api.dependencies import get_current_user, require_roles
+from backend.api.dependencies import get_current_user, require_roles, user_can_access_device
 from backend.api.schemas import KnowledgeTextRequest, LoginRequest, MessageCreateRequest, SessionCreateRequest
 from backend.core.config import get_settings
 from backend.core.errors import AppError
@@ -50,7 +50,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> dict:
     if not user or not verify_password(payload.password, user.password_hash):
         raise AppError("AUTH_INVALID", "用户名或密码不正确", 401, False, "auth")
     token = create_access_token(user.id, user.username, user.role, settings.access_token_secret, settings.access_token_minutes)
-    return {"access_token": token, "token_type": "bearer", "user": {"id": user.id, "username": user.username, "role": user.role}}
+    return {"access_token": token, "token_type": "bearer", "user": {"id": user.id, "username": user.username, "role": user.role, "status": user.status, "organization_id": user.organization_id}}
 
 
 @router.get("/health")
@@ -127,7 +127,7 @@ async def create_message(payload: MessageCreateRequest, user: User = Depends(get
 
 @router.post("/knowledge/text")
 async def create_knowledge_text(payload: KnowledgeTextRequest, user: User = Depends(require_roles(UserRole.KNOWLEDGE_ADMIN, UserRole.SYSTEM_ADMIN)), db: Session = Depends(get_db)) -> dict:
-    document = await knowledge.ingest_text(db, payload.name, payload.content, payload.version, payload.device_model)
+    document = await knowledge.ingest_text(db, payload.name, payload.content, payload.version, payload.device_model, user.organization_id)
     db.add(AuditEvent(trace_id=str(uuid4()), actor_id=user.id, action="knowledge.indexed", target=document.id, details={"name": document.name, "chunks": len(document.chunks)}))
     db.commit()
     return {"id": document.id, "name": document.name, "version": document.version, "status": document.status, "chunks": len(document.chunks)}
@@ -147,7 +147,7 @@ async def upload_knowledge_document(file: UploadFile = File(...), version: str =
     path.write_bytes(content)
     try:
         extracted = knowledge.extract_text(path)
-        document = await knowledge.ingest_text(db, file.filename or safe_name, extracted, version, device_model)
+        document = await knowledge.ingest_text(db, file.filename or safe_name, extracted, version, device_model, user.organization_id)
         db.add(AuditEvent(trace_id=str(uuid4()), actor_id=user.id, action="knowledge.uploaded", target=document.id, details={"original_name": file.filename, "size": len(content)}))
         db.commit()
         return {"id": document.id, "name": document.name, "version": document.version, "status": document.status, "chunks": len(document.chunks)}

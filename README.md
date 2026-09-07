@@ -89,3 +89,51 @@ faster-whisper 首次使用需要下载 STT_MODEL_SIZE 对应权重。当前默�
 首次创建或升级数据库：python -m pip install -e .，然后执行 alembic upgrade head。
 
 应用启动仍会执行安全的 create_all 兼容初始化；生产部署应优先执行 Alembic 迁移并备份 data/db/voiceinspect.db。
+## 企业后台页面
+
+前端已升级为 Vue Router 企业后台，登录后可访问：
+
+- 运营总览：设备、开放故障、已发布知识与能力健康
+- 多模态诊断：保留文本、语音、图片、RAG、引用和受控建单
+- 诊断会话：列表、搜索和会话详情
+- 故障闭环：新建、确认、处理中、待验证、已关闭及事件时间线
+- 设备资产：组织范围设备列表、资料和故障历史
+- 知识库：上传、解析、索引、发布、停用和重试
+- 报告中心：故障与会话 CSV/PDF 导出
+- 审计追踪：动作、对象、trace_id 筛选
+- 用户与权限：仅系统管理员可见
+- 系统设置：Provider 健康、能力状态和配置校验，仅系统管理员可见
+
+默认演示账号：
+
+| 账号 | 密码 | 角色 |
+|---|---|---|
+| operator | change-me | 操作员 |
+| supervisor | change-me-supervisor | 维修主管 |
+| admin | change-me-admin | 系统管理员 |
+
+首次部署后请立即通过环境变量或后台账号管理替换演示密码。前端菜单隐藏不等于安全边界，所有受保护接口仍在服务端执行角色和组织范围校验。
+
+## 企业后台迁移
+
+    .\\.venv\\Scripts\\alembic.exe upgrade head
+    .\\.venv\\Scripts\\alembic.exe check
+
+企业迁移版本为 0002_enterprise、0003_enterprise_columns、0004_enterprise_indexes。已有单组织数据会在应用启动时归入 ORG-DEMO / SITE-DEMO / LINE-DEMO，A-01 迁移到默认产线。
+
+## 质量门禁
+
+已实际验证：
+
+- 后端：8 项 pytest 通过
+- Alembic：check 无待生成迁移
+- 前端：TypeScript/Vite 构建通过
+- 前端单元测试：3 项通过
+- Docker：API 与 Web 镜像构建、启动，API 健康检查通过
+- API：四角色登录、组织范围设备、故障确认幂等、非法状态转换、Provider 健康、CSV/PDF 下载通过
+
+尚未作为通过项声明：
+
+- 真实浏览器截图、键盘和窄屏 E2E：当前浏览器自动化工具不可用
+- 20 条普通话、10 张图片、Recall@5、Citation Precision 和性能目标：评测数据集尚未执行
+- 真实 SSO、批量设备导入和 PostgreSQL/MySQL 部署：保留扩展边界，未纳入本地 MVP
