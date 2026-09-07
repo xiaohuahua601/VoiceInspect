@@ -27,6 +27,7 @@ class OllamaProvider:
         system = (
             "你是 VoiceInspect 工业设备诊断助手。只能根据给出的用户问题和资料依据回答。"
             "区分可观察事实、资料依据、推断建议和安全提示；资料不足时明确说资料不足，不要编造手册引用。"
+            "可以使用安全的标准 Markdown（标题、粗体、列表、引用、代码和表格）组织回答，不要输出原始 HTML、脚本或危险链接。"
         )
         evidence = "\n\n".join(context or []) or "（没有检索到可靠资料）"
         composed = f"{system}\n\n资料依据：\n{evidence}\n\n用户问题：{prompt}"
