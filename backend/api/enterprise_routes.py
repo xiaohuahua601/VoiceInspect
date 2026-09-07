@@ -288,6 +288,15 @@ def _fault(db: Session, fault_id: str, user: User) -> FaultRecord:
     return item
 
 
+def _validate_assignee(db: Session, item: FaultRecord, assigned_to: str | None) -> User | None:
+    if not assigned_to:
+        return None
+    device = db.get(Device, item.device_id)
+    assignee = db.get(User, assigned_to)
+    if not assignee or assignee.status != "active" or assignee.role not in {UserRole.OPERATOR.value, UserRole.MAINTENANCE_SUPERVISOR.value} or not device or assignee.organization_id != device.organization_id:
+        raise AppError("FAULT_ASSIGNEE_INVALID", "负责人必须是同组织的在岗操作员或维修主管", 422, False, "fault")
+    return assignee
+
 def _transition(db: Session, item: FaultRecord, user: User, target: FaultStatus, action: str, payload: FaultAction) -> dict:
     allowed = {FaultStatus.NEW: {FaultStatus.CONFIRMED}, FaultStatus.CONFIRMED: {FaultStatus.IN_PROGRESS},
                FaultStatus.IN_PROGRESS: {FaultStatus.PENDING_VERIFICATION}, FaultStatus.PENDING_VERIFICATION: {FaultStatus.CLOSED}}
@@ -297,7 +306,7 @@ def _transition(db: Session, item: FaultRecord, user: User, target: FaultStatus,
     if target == FaultStatus.CONFIRMED: item.confirmed_by = user.id
     if target == FaultStatus.PENDING_VERIFICATION: item.verified_by = user.id
     if target == FaultStatus.CLOSED: item.closed_by, item.resolution = user.id, payload.resolution or payload.note
-    if payload.assigned_to: item.assigned_to = payload.assigned_to
+    if payload.assigned_to: item.assigned_to = _validate_assignee(db, item, payload.assigned_to).id
     db.add(FaultEvent(fault_id=item.id, actor_id=user.id, from_status=before, to_status=item.status, note=payload.note or payload.resolution))
     _audit(db, user, action, item.id, {"from": before, "to": item.status}); db.commit(); db.refresh(item)
     return _fault_view(item, db)
@@ -336,12 +345,9 @@ def fault_confirm(fault_id: str, payload: FaultAction | None = None, user: User 
 @router.post("/fault-records/{fault_id}/assign")
 def fault_assign(fault_id: str, payload: FaultAction, user: User = Depends(require_roles(UserRole.MAINTENANCE_SUPERVISOR, UserRole.SYSTEM_ADMIN)), db: Session = Depends(get_db)) -> dict:
     item = _fault(db, fault_id, user)
-    device = db.get(Device, item.device_id)
     if not payload.assigned_to:
         raise AppError("FAULT_ASSIGNEE_REQUIRED", "请选择负责人", 422, False, "fault")
-    assignee = db.get(User, payload.assigned_to)
-    if not assignee or assignee.status != "active" or assignee.role not in {UserRole.OPERATOR.value, UserRole.MAINTENANCE_SUPERVISOR.value} or not device or assignee.organization_id != device.organization_id:
-        raise AppError("FAULT_ASSIGNEE_INVALID", "负责人必须是同组织的在岗操作员或维修主管", 422, False, "fault")
+    assignee = _validate_assignee(db, item, payload.assigned_to)
     if item.status in {FaultStatus.CLOSED.value, FaultStatus.PENDING_VERIFICATION.value}:
         raise AppError("FAULT_STATUS_TRANSITION_INVALID", "当前故障状态不允许分派或改派", 409, False, "fault")
     if item.status not in {FaultStatus.CONFIRMED.value, FaultStatus.IN_PROGRESS.value}:
