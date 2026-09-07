@@ -14,6 +14,16 @@ class Settings(BaseSettings):
     ollama_llm_model: str = "qwen2.5:7b-instruct-q4_K_M"
     ollama_embed_model: str = "quentinz/bge-large-zh-v1.5:latest"
     ollama_vision_model: str | None = None
+    ollama_timeout_seconds: float = 90.0
+    stt_model_size: str = "small"
+    stt_device: str = "cpu"
+    stt_compute_type: str = "int8"
+    stt_model_path: str | None = None
+    max_audio_seconds: int = 120
+    max_image_pixels: int = 20000000
+    confirmation_ttl_seconds: int = 600
+    piper_executable: str = "piper"
+    piper_voice: str = ""
     upload_dir: Path = Path("./data/uploads")
     knowledge_dir: Path = Path("./data/knowledge")
     log_dir: Path = Path("./data/logs")

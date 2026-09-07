@@ -5,7 +5,7 @@ type User = { id: string; username: string; role: string }
 type Device = { id: string; code: string; model: string; name: string }
 type Citation = { citation_id: string; document: string; version: string; page: number | null; section: string; quote_text: string; score: number }
 type StageState = Record<string, string | number>
-type Message = { id: string; role: 'user' | 'assistant'; text: string | null; status: string; citations: Citation[]; stage_states: StageState; created_at: string }
+type Message = { id: string; role: 'user' | 'assistant'; text: string | null; status: string; citations: Citation[]; stage_states: StageState; observations?: Record<string, unknown>; created_at: string }
 type Session = { id: string; title: string; status: string; device_id: string | null; created_at: string; messages?: Message[] }
 
 const apiBase = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000/api/v1'
@@ -24,12 +24,25 @@ const errorMessage = ref('')
 const notice = ref('')
 const health = ref<{ status: string; database: boolean; ollama: { available: boolean; models?: string[]; reason?: string } } | null>(null)
 const citationsOpen = ref<string | null>(null)
+const capabilities = ref<Record<string, any>>({})
+const audioAssetId = ref('')
+const imageAssetId = ref('')
+const uploadState = ref('')
+const recording = ref(false)
+const recordSeconds = ref(0)
+const imageInput = ref<HTMLInputElement | null>(null)
+const faultDraft = ref<any>(null)
+const faultDialogOpen = ref(false)
+let recorder: MediaRecorder | null = null
+let recorderStream: MediaStream | null = null
+let recorderChunks: Blob[] = []
+let recordTimer: number | undefined
 
 const isLoggedIn = computed(() => Boolean(token.value && user.value))
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers)
-  headers.set('Content-Type', 'application/json')
+  if (!(options.body instanceof FormData)) headers.set('Content-Type', 'application/json')
   if (token.value) headers.set('Authorization', `Bearer ${token.value}`)
   const response = await fetch(`${apiBase}${path}`, { ...options, headers })
   const data = await response.json().catch(() => ({}))
@@ -64,14 +77,16 @@ function logout() {
 }
 
 async function loadWorkspace() {
-  const [sessionList, deviceList, healthResult] = await Promise.all([
+  const [sessionList, deviceList, healthResult, capabilityResult] = await Promise.all([
     request<Session[]>('/sessions'),
     request<Device[]>('/devices'),
     request<typeof health.value>('/health'),
+    request<Record<string, any>>('/capabilities'),
   ])
   sessions.value = sessionList
   devices.value = deviceList
   health.value = healthResult
+  capabilities.value = capabilityResult
   if (sessions.value.length) await selectSession(sessions.value[0].id)
   else await createSession()
 }
@@ -97,6 +112,94 @@ async function selectSession(id: string) {
   }
 }
 
+async function uploadAsset(file: File, kind: 'audio' | 'image') {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('kind', kind)
+  if (activeSession.value) form.append('session_id', activeSession.value.id)
+  uploadState.value = kind === 'audio' ? '正在转存音频…' : '正在转存图片…'
+  try {
+    const result = await request<{ id: string }>('/assets', { method: 'POST', body: form })
+    if (kind === 'audio') audioAssetId.value = result.id
+    else imageAssetId.value = result.id
+    uploadState.value = kind === 'audio' ? '语音已就绪，可编辑补充文字' : '图片已就绪，可开始诊断'
+  } catch (error) {
+    uploadState.value = error instanceof Error ? error.message : '附件上传失败'
+  }
+}
+
+async function chooseImage(event: Event) {
+  const file = (event.target as HTMLInputElement).files?.[0]
+  if (file) await uploadAsset(file, 'image')
+  ;(event.target as HTMLInputElement).value = ''
+}
+
+async function toggleRecording() {
+  if (recording.value) {
+    recorder?.stop()
+    recorderStream?.getTracks().forEach((track) => track.stop())
+    recording.value = false
+    if (recordTimer) window.clearInterval(recordTimer)
+    return
+  }
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    uploadState.value = '当前浏览器不支持本地录音，请直接输入文字'
+    return
+  }
+  try {
+    recorderStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    recorderChunks = []
+    recorder = new MediaRecorder(recorderStream)
+    recorder.ondataavailable = (event) => { if (event.data.size) recorderChunks.push(event.data) }
+    recorder.onstop = async () => {
+      const blob = new Blob(recorderChunks, { type: recorder?.mimeType || 'audio/webm' })
+      await uploadAsset(new File([blob], '现场录音.webm', { type: blob.type }), 'audio')
+    }
+    recorder.start()
+    recordSeconds.value = 0
+    recording.value = true
+    recordTimer = window.setInterval(() => { recordSeconds.value += 1 }, 1000)
+  } catch {
+    uploadState.value = '无法访问麦克风，请检查浏览器权限'
+  }
+}
+
+async function createFaultDraft(message: Message) {
+  if (!activeSession.value || !selectedDeviceId.value || !message.text) {
+    errorMessage.value = '请先选择设备，且诊断结果必须包含故障描述'
+    return
+  }
+  try {
+    faultDraft.value = await request('/tool-drafts', {
+      method: 'POST',
+      body: JSON.stringify({
+        session_id: activeSession.value.id,
+        tool_name: 'create_fault_record',
+        arguments: {
+          device_id: selectedDeviceId.value,
+          symptom: message.text.slice(0, 2000),
+          severity: 'medium',
+          idempotency_key: activeSession.value.id + '-' + message.id,
+        },
+      }),
+    })
+    faultDialogOpen.value = true
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '无法创建故障记录草稿'
+  }
+}
+
+async function confirmFault() {
+  if (!faultDraft.value?.confirmation_token) return
+  try {
+    const result = await request<{ status?: string }>('/confirmations/' + faultDraft.value.confirmation_token, { method: 'POST' })
+    faultDialogOpen.value = false
+    notice.value = result.status === 'already_exists' ? '故障记录已存在，未重复创建' : '故障记录已创建并写入审计'
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '故障记录确认失败'
+  }
+}
+
 async function sendQuestion() {
   const text = question.value.trim()
   if (!text || !activeSession.value || isBusy.value) return
@@ -107,9 +210,11 @@ async function sendQuestion() {
   activeSession.value.messages = [...(activeSession.value.messages ?? []), optimistic]
   question.value = ''
   try {
-    const result = await request<{ message: Message }>('/messages', { method: 'POST', body: JSON.stringify({ session_id: activeSession.value.id, text, device_id: selectedDeviceId.value || null }) })
+    const result = await request<{ message: Message }>('/messages', { method: 'POST', body: JSON.stringify({ session_id: activeSession.value.id, text, audio_asset_id: audioAssetId.value || null, image_asset_id: imageAssetId.value || null }) })
     activeSession.value.messages = [...(activeSession.value.messages ?? []).filter((item) => item.id !== optimistic.id), optimistic, result.message]
     notice.value = '诊断回答已保存，可展开查看资料依据'
+    audioAssetId.value = ''
+    imageAssetId.value = ''
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '诊断失败'
     notice.value = '问题已保留，请修复服务状态后重试'
@@ -139,8 +244,8 @@ onMounted(async () => {
     <section v-else class="workspace">
       <aside class="sidebar" aria-label="工作区导航"><div class="brand"><span class="pulse-dot" aria-hidden="true"></span><span>VOICE<br />INSPECT</span></div><div class="sidebar-section"><p class="eyebrow">现场工作台</p><button class="nav-item active" type="button" disabled aria-current="page"><span>⌁</span> 诊断会话</button></div><div class="sidebar-section session-section"><div class="section-heading"><p class="eyebrow">最近会话</p><button class="icon-button" type="button" aria-label="创建新会话" @click="createSession">＋</button></div><button v-for="session in sessions" :key="session.id" class="session-item" :class="{ selected: activeSession?.id === session.id }" type="button" @click="selectSession(session.id)"><span class="session-mark">{{ session.title.slice(0, 1) }}</span><span><strong>{{ session.title }}</strong><small>{{ new Date(session.created_at).toLocaleDateString('zh-CN') }}</small></span></button></div><div class="sidebar-footer"><div class="user-chip"><span class="avatar">{{ user?.username.slice(0, 1).toUpperCase() }}</span><span><strong>{{ user?.username }}</strong><small>{{ user?.role === 'system_admin' ? '系统管理员' : '现场操作员' }}</small></span></div><button class="logout-button" type="button" @click="logout">退出</button></div></aside>
       <section class="main-panel"><header class="topbar"><div><p class="eyebrow">DIAGNOSIS SESSION</p><h2>{{ activeSession?.title ?? '诊断会话' }}</h2></div><div class="topbar-actions"><div class="health-chip" :class="health?.status === 'ok' ? 'is-ok' : 'is-degraded'"><span class="status-dot"></span><span>{{ health?.status === 'ok' ? '本地服务正常' : '服务需检查' }}</span></div><button class="button secondary" type="button" @click="loadWorkspace">刷新状态</button></div></header><div class="context-strip"><div><span class="strip-label">当前设备</span><select v-model="selectedDeviceId" aria-label="选择当前设备"><option value="">未选择设备</option><option v-for="device in devices" :key="device.id" :value="device.id">{{ device.name }} · {{ device.model }}</option></select></div><div class="strip-note"><span class="status-dot is-ok"></span><span>默认本地处理 · 不上传云端</span></div></div>
-        <div class="timeline" aria-live="polite"><div v-if="!activeSession?.messages?.length" class="empty-state"><div class="empty-orbit"><span></span><span></span><span></span></div><p class="eyebrow">READY FOR INPUT</p><h3>从现场现象开始</h3><p>描述报警、设备状态或想确认的手册条目。语音和图片能力会在本地模型就绪后加入当前会话。</p><div class="quick-prompts"><button type="button" @click="question = '空压机 A-01 出现压力波动，应该先检查什么？'">压力波动怎么查？</button><button type="button" @click="question = '请根据当前设备手册说明报警含义。'">解释设备报警</button></div></div><template v-for="message in activeSession?.messages" :key="message.id"><article v-if="message.role === 'user'" class="message user-message"><div class="message-meta"><span class="mini-avatar">{{ user?.username.slice(0, 1).toUpperCase() }}</span><span>你 · {{ new Date(message.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}</span></div><p>{{ message.text }}</p></article><article v-else class="answer-block"><div class="answer-head"><div><p class="eyebrow signal-label">ASSISTED FINDING</p><h3>诊断建议</h3></div><span class="verified-stamp">● {{ message.status === 'completed' ? '已保存' : '部分完成' }}</span></div><p class="answer-text">{{ message.text }}</p><div class="stage-row"><span v-for="item in stageEntries(message.stage_states)" :key="item[0]" class="stage-chip" :class="`tone-${statusTone(item[1])}`"><span class="chip-dot"></span>{{ stageLabel(item[0]) }} · {{ statusLabel(item[1]) }}</span><span v-if="message.stage_states.completed_ms" class="latency">{{ message.stage_states.completed_ms }} ms</span></div><div v-if="message.citations?.length" class="evidence-section"><div class="evidence-heading"><span class="evidence-icon">⌁</span><div><p class="eyebrow">资料依据</p><strong>{{ message.citations.length }} 条相关片段</strong></div></div><button v-for="citation in message.citations" :key="citation.citation_id" class="citation-row" type="button" @click="citationsOpen = citationsOpen === citation.citation_id ? null : citation.citation_id"><span class="citation-index">{{ message.citations.indexOf(citation) + 1 }}</span><span><strong>{{ citation.document }}</strong><small>{{ citation.section }} · 相关度 {{ citation.score }}</small></span><span class="citation-arrow">{{ citationsOpen === citation.citation_id ? '−' : '+' }}</span><p v-if="citationsOpen === citation.citation_id" class="citation-quote">{{ citation.quote_text }}</p></button></div><div v-else class="degraded-note"><span>!</span><span>当前没有检索到可绑定的手册依据，请补充设备型号或联系知识库管理员。</span></div></article></template><p v-if="errorMessage" class="inline-error workspace-error" role="alert">{{ errorMessage }}</p><p v-if="notice" class="inline-notice" role="status">{{ notice }}</p></div>
-        <form class="composer" novalidate @submit.prevent="sendQuestion"><textarea class="resize-none" v-model="question" rows="2" :disabled="isBusy" placeholder="描述设备现象… Enter 发送，Shift + Enter 换行" aria-label="诊断问题"></textarea><div class="composer-actions"><div class="composer-tools"><button type="button" class="tool-button" disabled title="语音能力将在本地 STT 就绪后启用">◉ <span>语音</span></button><button type="button" class="tool-button" disabled title="视觉能力将在本地 VLM 就绪后启用">▧ <span>图片</span></button></div><button class="button primary" type="submit" :disabled="isBusy || !question.trim()" :aria-busy="isBusy">{{ isBusy ? '正在分析…' : '开始诊断' }} <span aria-hidden="true">→</span></button></div></form>
+        <input ref="imageInput" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" @change="chooseImage" /><div class="timeline" aria-live="polite"><div v-if="!activeSession?.messages?.length" class="empty-state"><div class="empty-orbit"><span></span><span></span><span></span></div><p class="eyebrow">READY FOR INPUT</p><h3>从现场现象开始</h3><p>描述报警、设备状态或想确认的手册条目。可以直接输入文字，也可以录音或附加现场图片；模型不可用时会保留其他可用证据。</p><div class="quick-prompts"><button type="button" @click="question = '空压机 A-01 出现压力波动，应该先检查什么？'">压力波动怎么查？</button><button type="button" @click="question = '请根据当前设备手册说明报警含义。'">解释设备报警</button></div></div><template v-for="message in activeSession?.messages" :key="message.id"><article v-if="message.role === 'user'" class="message user-message"><div class="message-meta"><span class="mini-avatar">{{ user?.username.slice(0, 1).toUpperCase() }}</span><span>你 · {{ new Date(message.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}</span></div><p>{{ message.text }}</p></article><article v-else class="answer-block"><div class="answer-head"><div><p class="eyebrow signal-label">ASSISTED FINDING</p><h3>诊断建议</h3></div><span class="verified-stamp">● {{ message.status === 'completed' ? '已保存' : '部分完成' }}</span></div><p class="answer-text">{{ message.text }}</p><div class="stage-row"><span v-for="item in stageEntries(message.stage_states)" :key="item[0]" class="stage-chip" :class="`tone-${statusTone(item[1])}`"><span class="chip-dot"></span>{{ stageLabel(item[0]) }} · {{ statusLabel(item[1]) }}</span><span v-if="message.stage_states.completed_ms" class="latency">{{ message.stage_states.completed_ms }} ms</span></div><div v-if="message.citations?.length" class="evidence-section"><div class="evidence-heading"><span class="evidence-icon">⌁</span><div><p class="eyebrow">资料依据</p><strong>{{ message.citations.length }} 条相关片段</strong></div></div><button v-for="citation in message.citations" :key="citation.citation_id" class="citation-row" type="button" @click="citationsOpen = citationsOpen === citation.citation_id ? null : citation.citation_id"><span class="citation-index">{{ message.citations.indexOf(citation) + 1 }}</span><span><strong>{{ citation.document }}</strong><small>{{ citation.section }} · 相关度 {{ citation.score }}</small></span><span class="citation-arrow">{{ citationsOpen === citation.citation_id ? '−' : '+' }}</span><p v-if="citationsOpen === citation.citation_id" class="citation-quote">{{ citation.quote_text }}</p></button></div><div v-else class="degraded-note"><span>!</span><span>当前没有检索到可绑定的手册依据，请补充设备型号或联系知识库管理员。</span></div><div v-if="message.text && selectedDeviceId" class="answer-actions"><button class="button secondary" type="button" @click="createFaultDraft(message)">确认创建故障记录</button></div></article></template><p v-if="errorMessage" class="inline-error workspace-error" role="alert">{{ errorMessage }}</p><p v-if="notice" class="inline-notice" role="status">{{ notice }}</p></div>
+        <form class="composer" novalidate @submit.prevent="sendQuestion"><textarea class="resize-none" v-model="question" rows="2" :disabled="isBusy" placeholder="描述设备现象… Enter 发送，Shift + Enter 换行" aria-label="诊断问题"></textarea><div v-if="uploadState" class="upload-state" role="status">{{ uploadState }}</div><div class="composer-actions"><div class="composer-tools"><button type="button" class="tool-button" :class="{ recording }" :disabled="isBusy || capabilities.stt?.available === false" :title="capabilities.stt?.available === false ? '本地 STT 未安装' : '录制现场语音'" @click="toggleRecording">◉ <span>{{ recording ? '停止' : '语音' }}<small v-if="recording">{{ recordSeconds }}s</small></span></button><button type="button" class="tool-button" :disabled="isBusy || capabilities.vision?.available === false" :title="capabilities.vision?.available === false ? '本地 VLM 未配置' : '附加现场图片'" @click="imageInput?.click()">▧ <span>图片</span></button></div><div v-if="audioAssetId || imageAssetId" class="attachment-badges"><span v-if="audioAssetId" class="attachment-badge">语音待发送</span><span v-if="imageAssetId" class="attachment-badge">图片待发送</span></div><button class="button primary" type="submit" :disabled="isBusy || (!question.trim() && !audioAssetId)" :aria-busy="isBusy">{{ isBusy ? '正在分析…' : '开始诊断' }} <span aria-hidden="true">→</span></button></div></form><div v-if="faultDialogOpen" class="dialog-backdrop" role="presentation"><section class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="fault-title"><p class="eyebrow">CONTROLLED WRITE</p><h3 id="fault-title">确认创建故障记录？</h3><p>这会写入设备历史并记录审计信息。重复确认不会重复创建。</p><div class="dialog-actions"><button class="button secondary" type="button" @click="faultDialogOpen = false">取消</button><button class="button primary" type="button" @click="confirmFault">确认写入</button></div></section></div>
       </section>
     </section>
   </main>

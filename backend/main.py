@@ -7,11 +7,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.api.routes import router
+from backend.api.advanced_routes import router as advanced_router
 from backend.core.config import get_settings
 from backend.core.errors import AppError, app_error_handler
 from backend.core.security import hash_password
 from backend.repositories.db import SessionLocal, init_db
 from backend.repositories.models import Device, User
+from backend.repositories import advanced_models  # noqa: F401
 
 
 settings = get_settings()
@@ -58,4 +60,5 @@ async def unhandled_error(_: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"error": {"code": "INTERNAL_ERROR", "message": "服务暂时不可用，请稍后重试", "retryable": True, "stage": "api"}})
 
 
+app.include_router(advanced_router)
 app.include_router(router)
