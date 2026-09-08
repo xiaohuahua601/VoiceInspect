@@ -13,7 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
@@ -175,6 +175,109 @@ async def create_multimodal_message(payload: MultimodalMessage, user: User = Dep
     return {"message": {"id": assistant.id, "role": assistant.role, "text": assistant.text, "status": assistant.status, "citations": assistant.citations or [], "stage_states": assistant.stage_states or {}, "observations": assistant.observations or {}, "created_at": assistant.created_at}, "metadata": metadata}
 
 
+
+def _sse(event: dict[str, Any]) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
+def _stream_message_payload(message: Message) -> dict[str, Any]:
+    return {
+        "id": message.id,
+        "role": message.role,
+        "text": message.text,
+        "status": message.status,
+        "citations": message.citations or [],
+        "stage_states": message.stage_states or {},
+        "observations": message.observations or {},
+        "created_at": message.created_at.isoformat(),
+    }
+
+
+@router.post("/messages/stream")
+async def stream_multimodal_message(payload: MultimodalMessage, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> StreamingResponse:
+    async def events():
+        try:
+            session = _session_for(db, payload.session_id, user)
+            text = payload.text.strip()
+            transcript: dict | None = None
+            observations: dict | None = None
+            stage_states: dict[str, Any] = {"stt": "skipped", "vision": "skipped", "rag": "pending", "llm": "pending", "tts": "skipped"}
+            started = time.perf_counter()
+            if payload.audio_asset_id:
+                asset = db.get(Asset, payload.audio_asset_id)
+                if not asset or asset.owner_id != user.id or asset.kind != "audio":
+                    raise AppError("ASSET_NOT_FOUND", "音频附件不存在或无权访问", 404, False, "stt")
+                task = _task(db, session.id, "stt", asset.id)
+                db.commit()
+                try:
+                    result = await stt.transcribe(settings.upload_dir / asset.stored_name)
+                    transcript = {"text": result.text, "language": result.language, "duration_ms": result.duration_ms, "segments": result.segments}
+                    text = (text + "\n" + result.text).strip()
+                    stage_states["stt"] = "succeeded"
+                    _task_done(task, "succeeded", transcript)
+                except Exception as exc:
+                    stage_states["stt"] = "failed"
+                    _task_done(task, "failed", {"message": str(exc)}, "STT_UNAVAILABLE")
+            if payload.image_asset_id:
+                asset = db.get(Asset, payload.image_asset_id)
+                if not asset or asset.owner_id != user.id or asset.kind != "image":
+                    raise AppError("ASSET_NOT_FOUND", "图片附件不存在或无权访问", 404, False, "vision")
+                task = _task(db, session.id, "vision", asset.id)
+                db.commit()
+                try:
+                    result = await vision.analyze(settings.upload_dir / asset.stored_name, text or "观察设备状态")
+                    observations = result.__dict__
+                    stage_states["vision"] = "succeeded"
+                    _task_done(task, "succeeded", observations)
+                except Exception as exc:
+                    stage_states["vision"] = "failed"
+                    _task_done(task, "failed", {"message": str(exc)}, "VLM_UNAVAILABLE")
+            if not text:
+                raise AppError("MESSAGE_EMPTY", "请输入文字或提供可用的语音输入", 422, False, "message")
+            user_message = Message(session_id=session.id, role="user", text=text, status="completed", transcript=transcript, observations=observations, stage_states=stage_states)
+            db.add(user_message)
+            db.flush()
+            _event(db, session.id, "message.input", {"message_id": user_message.id, "stages": stage_states})
+            citations = await knowledge.search(db, text, top_k=5)
+            stage_states["rag"] = "succeeded" if citations else "partial"
+            evidence = [f"[{item['document']} / {item['section']}] {item['quote_text']}" for item in citations]
+            if observations:
+                evidence.insert(0, "图片观察：" + json.dumps(observations, ensure_ascii=False))
+            stage_states["llm"] = "running"
+            db.commit()
+            yield _sse({"type": "start", "stage_states": stage_states, "message_id": user_message.id})
+            answer_parts: list[str] = []
+            metadata: dict[str, Any] = {}
+            async for item in ollama.stream_generate(text, evidence):
+                if item.get("type") == "chunk":
+                    content = str(item.get("content", ""))
+                    answer_parts.append(content)
+                    yield _sse({"type": "chunk", "content": content})
+                elif item.get("type") == "done":
+                    metadata = item.get("metadata", {})
+            answer = "".join(answer_parts).strip()
+            stage_states["llm"] = "succeeded" if answer else "failed"
+            stage_states["completed_ms"] = round((time.perf_counter() - started) * 1000, 1)
+            result_status = "completed" if answer and not any(stage_states[x] == "failed" for x in ("stt", "vision")) else "partial"
+            assistant = Message(session_id=session.id, role="assistant", text=answer, status=result_status, citations=citations, stage_states=stage_states, observations=observations)
+            db.add(assistant)
+            db.add(AuditEvent(trace_id=str(uuid4()), actor_id=user.id, action="diagnosis.multimodal_completed", target=assistant.id, details={"model": metadata, "citation_count": len(citations), "stages": stage_states, "streaming": True}))
+            _event(db, session.id, "message.completed", {"message_id": assistant.id, "stages": stage_states})
+            db.commit()
+            db.refresh(assistant)
+            yield _sse({"type": "complete", "message": _stream_message_payload(assistant), "metadata": metadata})
+        except asyncio.CancelledError:
+            db.rollback()
+            raise
+        except AppError as exc:
+            db.rollback()
+            yield _sse({"type": "error", "error": {"code": exc.code, "message": exc.message, "retryable": exc.retryable, "stage": exc.stage, "trace_id": str(uuid4())}})
+        except Exception:
+            db.rollback()
+            yield _sse({"type": "error", "error": {"code": "MODEL_STREAM_FAILED", "message": "诊断回答生成失败，请重试", "retryable": True, "stage": "llm", "trace_id": str(uuid4())}})
+        yield "data: [DONE]\\n\\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 @router.post("/tasks/{task_id}/retry")
 async def retry_task(task_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     task = db.get(CapabilityTask, task_id)
