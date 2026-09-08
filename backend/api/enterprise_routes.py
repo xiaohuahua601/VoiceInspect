@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -15,9 +15,10 @@ from sqlalchemy.orm import Session
 from backend.api.dependencies import get_current_user, require_roles, user_can_access_device, visible_devices
 from backend.core.config import get_settings
 from backend.core.errors import AppError
-from backend.core.security import hash_password, verify_password
+from backend.core.security import hash_password, password_policy_error, verify_password
 from backend.domain.enums import FaultStatus, KnowledgeStatus, UserRole
 from backend.repositories.db import get_db
+from backend.rag.service import KnowledgeService
 from backend.providers.ollama import OllamaProvider
 from backend.providers.stt import FasterWhisperSTT
 from backend.providers.vision import OllamaVision
@@ -25,12 +26,13 @@ from backend.providers.tts import WindowsSapiTTS
 from backend.providers.piper import PiperTTS
 from backend.repositories.models import (
     AuditEvent, Device, DiagnosisSession, FaultEvent, FaultRecord, KnowledgeDoc,
-    Organization, ProductionLine, ProviderConfig, ReportExport, Site, User, UserScope,
+    Notification, Organization, ProductionLine, ProviderConfig, ReportExport, Site, User, UserScope,
     new_id, utc_now,
 )
 
 router = APIRouter(prefix="/api/v1")
 settings = get_settings()
+knowledge_service = KnowledgeService(OllamaProvider(settings))
 
 
 class NamedPayload(BaseModel):
@@ -90,6 +92,10 @@ class PasswordChange(BaseModel):
     new_password: str = Field(min_length=8, max_length=200)
 
 
+class PasswordReset(BaseModel):
+    new_password: str = Field(min_length=8, max_length=200)
+
+
 class ProviderPatch(BaseModel):
     model: str | None = Field(default=None, max_length=255)
     enabled: bool = True
@@ -121,14 +127,14 @@ def _fault_view(x: FaultRecord, db: Session | None = None) -> dict:
     return {"id": x.id, "device_id": x.device_id, "session_id": x.session_id, "symptom": x.symptom,
             "severity": x.severity, "status": x.status, "creator_id": x.creator_id, "assigned_to": x.assigned_to,
             "assigned_to_name": assignee.username if assignee else None,
-            "resolution": x.resolution, "created_at": x.created_at, "updated_at": x.updated_at}
+            "resolution": x.resolution, "due_at": x.due_at, "created_at": x.created_at, "updated_at": x.updated_at}
 
 
 @router.get("/auth/me")
 def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     scopes = db.scalars(select(UserScope).where(UserScope.user_id == user.id)).all()
     return {"id": user.id, "username": user.username, "role": user.role, "status": user.status,
-            "organization_id": user.organization_id,
+            "must_change_password": user.must_change_password, "organization_id": user.organization_id,
             "scopes": [{"organization_id": x.organization_id, "site_id": x.site_id, "line_id": x.line_id} for x in scopes]}
 
 
@@ -136,7 +142,10 @@ def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)) ->
 def change_password(payload: PasswordChange, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     if not verify_password(payload.current_password, user.password_hash):
         raise AppError("PASSWORD_INVALID", "当前密码不正确", 400, False, "auth")
+    if policy_error := password_policy_error(payload.new_password):
+        raise AppError("PASSWORD_POLICY_INVALID", policy_error, 422, False, "auth")
     user.password_hash = hash_password(payload.new_password)
+    user.must_change_password = False
     _audit(db, user, "user.password_changed", user.id)
     db.commit()
     return {"status": "changed"}
@@ -208,6 +217,7 @@ def device_list(user: User = Depends(get_current_user), db: Session = Depends(ge
 
 @router.post("/devices")
 def device_create(payload: DevicePayload, user: User = Depends(require_roles(UserRole.SYSTEM_ADMIN)), db: Session = Depends(get_db)) -> dict:
+    _validate_device_hierarchy(db, payload.organization_id, payload.site_id, payload.line_id)
     item = Device(code=payload.code.strip(), name=payload.name.strip(), model=payload.model.strip(), organization_id=payload.organization_id,
                   site_id=payload.site_id, line_id=payload.line_id, metadata_json=payload.metadata)
     db.add(item); db.flush(); _audit(db, user, "device.created", item.id); db.commit()
@@ -224,6 +234,7 @@ def device_patch(device_id: str, payload: DevicePayload, user: User = Depends(re
     item = db.get(Device, device_id)
     if not item:
         raise AppError("DEVICE_NOT_FOUND", "设备不存在", 404, False, "device")
+    _validate_device_hierarchy(db, payload.organization_id, payload.site_id, payload.line_id)
     item.code, item.name, item.model = payload.code.strip(), payload.name.strip(), payload.model.strip()
     item.organization_id, item.site_id, item.line_id, item.metadata_json = payload.organization_id, payload.site_id, payload.line_id, payload.metadata
     _audit(db, user, "device.updated", item.id); db.commit()
@@ -232,7 +243,7 @@ def device_patch(device_id: str, payload: DevicePayload, user: User = Depends(re
 
 @router.get("/users")
 def user_list(user: User = Depends(require_roles(UserRole.SYSTEM_ADMIN)), db: Session = Depends(get_db)) -> list[dict]:
-    return [{"id": x.id, "username": x.username, "role": x.role, "status": x.status, "organization_id": x.organization_id, "created_at": x.created_at}
+    return [{"id": x.id, "username": x.username, "role": x.role, "status": x.status, "organization_id": x.organization_id, "must_change_password": x.must_change_password, "created_at": x.created_at}
             for x in db.scalars(select(User).order_by(User.username)).all()]
 
 
@@ -241,11 +252,15 @@ def user_create(payload: UserPayload, user: User = Depends(require_roles(UserRol
     valid = {x.value for x in UserRole if x.value != "guest"}
     if payload.role not in valid:
         raise AppError("ROLE_INVALID", "角色不存在", 422, False, "user")
+    if payload.organization_id and not db.get(Organization, payload.organization_id):
+        raise AppError("ORGANIZATION_NOT_FOUND", "组织不存在", 404, False, "organization")
     if db.scalar(select(User).where(User.username == payload.username.strip())):
         raise AppError("USER_EXISTS", "用户名已存在", 409, False, "user")
-    item = User(username=payload.username.strip(), password_hash=hash_password(payload.password), role=payload.role, organization_id=payload.organization_id)
+    if policy_error := password_policy_error(payload.password):
+        raise AppError("PASSWORD_POLICY_INVALID", policy_error, 422, False, "user")
+    item = User(username=payload.username.strip(), password_hash=hash_password(payload.password), role=payload.role, organization_id=payload.organization_id, must_change_password=True)
     db.add(item); db.flush(); _audit(db, user, "user.created", item.id); db.commit()
-    return {"id": item.id, "username": item.username, "role": item.role, "status": item.status, "organization_id": item.organization_id}
+    return {"id": item.id, "username": item.username, "role": item.role, "status": item.status, "organization_id": item.organization_id, "must_change_password": item.must_change_password}
 
 
 @router.patch("/users/{user_id}")
@@ -253,11 +268,44 @@ def user_patch(user_id: str, payload: UserPatch, user: User = Depends(require_ro
     item = db.get(User, user_id)
     if not item:
         raise AppError("USER_NOT_FOUND", "用户不存在", 404, False, "user")
-    if payload.role: item.role = payload.role
-    if payload.status: item.status = payload.status
-    if payload.organization_id is not None: item.organization_id = payload.organization_id
+    if payload.role:
+        valid = {x.value for x in UserRole if x.value != "guest"}
+        if payload.role not in valid:
+            raise AppError("ROLE_INVALID", "角色不存在", 422, False, "user")
+        item.role = payload.role
+    if payload.status:
+        if payload.status not in {"active", "disabled"}:
+            raise AppError("USER_STATUS_INVALID", "账号状态无效", 422, False, "user")
+        item.status = payload.status
+        if payload.status == "disabled":
+            from backend.repositories.advanced_models import AuthSession
+            now = datetime.now(timezone.utc)
+            for session in db.scalars(select(AuthSession).where(AuthSession.user_id == item.id, AuthSession.revoked_at.is_(None))).all():
+                session.revoked_at = now
+    if payload.organization_id is not None:
+        if not db.get(Organization, payload.organization_id):
+            raise AppError("ORGANIZATION_NOT_FOUND", "组织不存在", 404, False, "organization")
+        item.organization_id = payload.organization_id
     _audit(db, user, "user.updated", item.id); db.commit()
-    return {"id": item.id, "username": item.username, "role": item.role, "status": item.status, "organization_id": item.organization_id}
+    return {"id": item.id, "username": item.username, "role": item.role, "status": item.status, "organization_id": item.organization_id, "must_change_password": item.must_change_password}
+
+
+@router.post("/users/{user_id}/reset-password")
+def user_reset_password(user_id: str, payload: PasswordReset, user: User = Depends(require_roles(UserRole.SYSTEM_ADMIN)), db: Session = Depends(get_db)) -> dict:
+    target = db.get(User, user_id)
+    if not target:
+        raise AppError("USER_NOT_FOUND", "用户不存在", 404, False, "user")
+    if policy_error := password_policy_error(payload.new_password):
+        raise AppError("PASSWORD_POLICY_INVALID", policy_error, 422, False, "user")
+    target.password_hash = hash_password(payload.new_password)
+    target.must_change_password = True
+    from backend.repositories.advanced_models import AuthSession
+    now = datetime.now(timezone.utc)
+    for session in db.scalars(select(AuthSession).where(AuthSession.user_id == target.id, AuthSession.revoked_at.is_(None))).all():
+        session.revoked_at = now
+    _audit(db, user, "user.password_reset", target.id)
+    db.commit()
+    return {"id": target.id, "username": target.username, "must_change_password": True}
 
 
 @router.patch("/users/{user_id}/scopes")
@@ -326,6 +374,14 @@ def fault_assignees(fault_id: str, user: User = Depends(require_roles(UserRole.M
     return [{"id": x.id, "username": x.username, "role": x.role, "status": x.status, "organization_id": x.organization_id} for x in db.scalars(q).all()]
 
 
+@router.get("/fault-records/overdue")
+def overdue_faults(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict]:
+    now = datetime.now(timezone.utc)
+    ids = {x.id for x in visible_devices(user, db)}
+    rows = db.scalars(select(FaultRecord).where(FaultRecord.device_id.in_(ids), FaultRecord.due_at.is_not(None), FaultRecord.due_at < now, FaultRecord.status != FaultStatus.CLOSED.value).order_by(FaultRecord.due_at)).all()
+    return [_fault_view(x, db) for x in rows]
+
+
 @router.get("/fault-records/{fault_id}")
 def fault_detail(fault_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     item = _fault(db, fault_id, user)
@@ -356,10 +412,13 @@ def fault_assign(fault_id: str, payload: FaultAction, user: User = Depends(requi
         return _fault_view(item, db)
     before = item.status
     item.assigned_to = assignee.id
+    if not item.due_at:
+        item.due_at = datetime.now(timezone.utc) + timedelta(hours=24)
     if before == FaultStatus.CONFIRMED.value:
         item.status = FaultStatus.IN_PROGRESS.value
     note = payload.note or ("重新分派给 " + assignee.username if before == FaultStatus.IN_PROGRESS.value else "分派给 " + assignee.username)
     db.add(FaultEvent(fault_id=item.id, actor_id=user.id, from_status=before, to_status=item.status, note=note))
+    db.add(Notification(recipient_id=assignee.id, kind="fault_assignment", title="新的故障处理任务", body=f"故障 {item.id[:8]} 已分派给你：{item.symptom[:120]}", target_type="fault", target_id=item.id))
     _audit(db, user, "fault.reassigned" if before == FaultStatus.IN_PROGRESS.value else "fault.assigned", item.id, {"from": before, "to": item.status, "assigned_to": assignee.id, "assigned_to_name": assignee.username, "idempotency_key": payload.idempotency_key})
     db.commit(); db.refresh(item)
     return _fault_view(item, db)
@@ -377,6 +436,21 @@ def fault_verify(fault_id: str, payload: FaultAction | None = None, user: User =
 @router.post("/fault-records/{fault_id}/close")
 def fault_close(fault_id: str, payload: FaultAction, user: User = Depends(require_roles(UserRole.MAINTENANCE_SUPERVISOR, UserRole.SYSTEM_ADMIN)), db: Session = Depends(get_db)) -> dict:
     return _fault_action(fault_id, payload, FaultStatus.CLOSED, "fault.closed", user, db)
+
+
+@router.get("/notifications")
+def notification_list(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict]:
+    rows = db.scalars(select(Notification).where(Notification.recipient_id == user.id).order_by(desc(Notification.created_at)).limit(100)).all()
+    return [{"id": x.id, "kind": x.kind, "title": x.title, "body": x.body, "target_type": x.target_type, "target_id": x.target_id, "read": bool(x.read_at), "created_at": x.created_at} for x in rows]
+
+
+@router.post("/notifications/{notification_id}/read")
+def notification_read(notification_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    item = db.get(Notification, notification_id)
+    if not item or item.recipient_id != user.id:
+        raise AppError("NOTIFICATION_NOT_FOUND", "通知不存在", 404, False, "notification")
+    item.read_at = utc_now(); db.commit()
+    return {"id": item.id, "read": True}
 
 
 @router.get("/knowledge/documents")
@@ -422,8 +496,15 @@ def knowledge_retire(document_id: str, user: User = Depends(require_roles(UserRo
 
 
 @router.post("/knowledge/documents/{document_id}/retry")
-def knowledge_retry(document_id: str, user: User = Depends(require_roles(UserRole.KNOWLEDGE_ADMIN, UserRole.SYSTEM_ADMIN)), db: Session = Depends(get_db)) -> dict:
-    return _knowledge_action(document_id, KnowledgeStatus.INDEXED, "knowledge.retried", user, db)
+async def knowledge_retry(document_id: str, user: User = Depends(require_roles(UserRole.KNOWLEDGE_ADMIN, UserRole.SYSTEM_ADMIN)), db: Session = Depends(get_db)) -> dict:
+    item = db.get(KnowledgeDoc, document_id)
+    if not item or (user.role != UserRole.SYSTEM_ADMIN.value and item.organization_id != user.organization_id):
+        raise AppError("KNOWLEDGE_NOT_FOUND", "知识文档不存在或无权访问", 404, False, "rag")
+    item = await knowledge_service.reindex_document(db, item)
+    _audit(db, user, "knowledge.retried", item.id, {"chunks": len(item.chunks)})
+    db.commit()
+    return {"id": item.id, "status": item.status, "chunks": len(item.chunks), "failure_reason": item.failure_reason}
+
 
 
 @router.post("/reports/faults")
@@ -483,7 +564,8 @@ async def provider_patch(name: str, payload: ProviderPatch, user: User = Depends
 @router.get("/settings/health")
 async def settings_health(user: User = Depends(require_roles(UserRole.SYSTEM_ADMIN)), db: Session = Depends(get_db)) -> dict:
     db.execute(select(1))
-    checks = {name: await _provider_health(name) for name in ("llm", "embedding", "vision", "stt", "tts")}
+    configured = {row.name: row.model for row in db.scalars(select(ProviderConfig)).all()}
+    checks = {name: await _provider_health(name, configured.get(name)) for name in ("llm", "embedding", "vision", "stt", "tts")}
     return {"status": "ok" if all(value.get("available") for value in checks.values()) else "degraded", "database": {"available": True}, **checks}
 
 @router.get("/sessions")
@@ -640,6 +722,8 @@ def enterprise_audit_events(
     action: str | None = None,
     target: str | None = None,
     trace_id: str | None = None,
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[dict]:
@@ -654,6 +738,10 @@ def enterprise_audit_events(
         query = query.where(AuditEvent.target.contains(target))
     if trace_id:
         query = query.where(AuditEvent.trace_id == trace_id)
+    if created_from:
+        query = query.where(AuditEvent.created_at >= created_from)
+    if created_to:
+        query = query.where(AuditEvent.created_at <= created_to)
     return [
         {
             "id": event.id,
@@ -724,6 +812,11 @@ def user_status(user_id: str, payload: UserStatusPayload, user: User = Depends(r
     if payload.status not in {"active", "disabled"}:
         raise AppError("USER_STATUS_INVALID", "账号状态无效", 422, False, "user")
     item.status = payload.status
+    if payload.status == "disabled":
+        from backend.repositories.advanced_models import AuthSession
+        now = datetime.now(timezone.utc)
+        for session in db.scalars(select(AuthSession).where(AuthSession.user_id == item.id, AuthSession.revoked_at.is_(None))).all():
+            session.revoked_at = now
     _audit(db, user, "user.status_updated", item.id, {"status": payload.status})
     db.commit()
-    return {"id": item.id, "username": item.username, "role": item.role, "status": item.status, "organization_id": item.organization_id}
+    return {"id": item.id, "username": item.username, "role": item.role, "status": item.status, "organization_id": item.organization_id, "must_change_password": item.must_change_password}

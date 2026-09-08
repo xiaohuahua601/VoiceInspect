@@ -39,3 +39,15 @@
 - All clickable controls are native buttons or links with visible focus.
 - Reduced-motion users receive the same status information without animated transitions.
 - Server authorization is authoritative. The client may hide irrelevant admin routes, but every protected endpoint enforces its role.
+
+## Route document title policy
+
+Each route should set a localized title in the form “页面 — VoiceInspect”. Loading and error states keep an honest title and do not expose stack traces or tokens. The authenticated shell remains navigable on resource errors.
+
+## Route error / 403 page behavior
+
+Permission failures remain app-owned and preserve the shell. A forbidden action explains that the current role or organization scope is insufficient and offers an allowed destination; the client never treats hidden navigation as the authorization boundary.
+
+## Account security behavior
+
+A newly created or administrator-reset account exposes a persistent first-login password-change banner. The account page validates the password policy in the app, submits only over the authenticated API, and replaces the local user snapshot after success. Passwords and tokens are never placed in route state, logs, or notifications.

@@ -35,6 +35,12 @@ components:
   stage-chip:
     shape: "pill"
     motion: "restrained"
+  account-security:
+    surface: "var(--panel)"
+    accent: "var(--signal)"
+  security-banner:
+    surface: "#FFF8E6"
+    accent: "#B45309"
 ---
 
 ## Overview
@@ -75,3 +81,7 @@ The shared state language is: queued, running, verified, partial, review, failed
 - Do respect reduced motion.
 - Do not present model guesses as equipment facts.
 - Do not use empty KPI cards or decorative chat bubbles as a substitute for workflow.
+
+## Security surfaces
+
+Account security uses the same panel and control tokens as the rest of the admin shell. Required password changes use a persistent amber banner with a direct “立即修改” action; the banner is not the only indication of the state because the account page also exposes the policy checklist.

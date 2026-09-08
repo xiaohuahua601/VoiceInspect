@@ -1,6 +1,7 @@
 :root { --ink:#16212b; --paper:#f4f1ea; --panel:#fffdf8; --signal:#0f766e; --signal-soft:#dff2ed; --amber:#b45309; --amber-soft:#fff1cf; --danger:#b42318; --danger-soft:#ffe4df; --line:#d7d2c8; --muted:#5c6872; --faint:#8a938f; font-family:'Aptos','Segoe UI','Microsoft YaHei',sans-serif; color:var(--ink); background:var(--paper); font-synthesis:none; text-rendering:optimizeLegibility; }
 * { box-sizing:border-box; }
 html,body,#app { min-height:100%; margin:0; }
+html { scrollbar-color:#a9b5b1 var(--paper); scrollbar-width:thin; }
 body { min-width:320px; background:var(--paper); }
 button,input,textarea,select { font:inherit; }
 button { cursor:pointer; }
@@ -302,7 +303,7 @@ code { color:var(--signal); font:11px 'Cascadia Mono',Consolas,monospace; }
 /* Fixed diagnosis session heading */
 .admin-shell.is-diagnosis .sidebar { overflow:hidden; }
 .admin-shell.is-diagnosis .sidebar .session-section { display:flex; flex:1 1 auto; flex-direction:column; min-height:0; }
-.admin-shell.is-diagnosis .sidebar .session-list { flex:1 1 auto; min-height:0; padding-right:3px; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; scrollbar-gutter:stable; }
+.admin-shell.is-diagnosis .sidebar .session-list { flex:1 1 auto; min-height:0; padding-right:3px; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; scrollbar-gutter:stable; scrollbar-color:#b8c4bf var(--panel); scrollbar-width:thin; }
 .admin-shell.is-diagnosis .sidebar .session-list::-webkit-scrollbar { width:8px; }
 .admin-shell.is-diagnosis .sidebar .session-list::-webkit-scrollbar-thumb { border:2px solid var(--panel); border-radius:999px; background:#b8c4bf; }
 @media (max-width:760px) {
@@ -398,3 +399,33 @@ code { color:var(--signal); font:11px 'Cascadia Mono',Consolas,monospace; }
 .uncertainty-card h4 { color:var(--signal); }
 @media (max-width:700px) { .evidence-grid { grid-template-columns:1fr; } }
 @media (prefers-reduced-motion: reduce) { .diagnostic-evidence * { animation:none !important; transition:none !important; } }
+
+.notification-menu { position:relative; }
+.notification-button { position:relative; display:grid; place-items:center; width:38px; height:38px; border:1px solid var(--line); border-radius:10px; background:transparent; color:var(--ink); font-size:18px; }
+.notification-button:hover { border-color:var(--signal); color:var(--signal); }
+.notification-button b { position:absolute; top:-5px; right:-5px; min-width:17px; padding:2px 4px; border-radius:999px; background:var(--danger); color:#fff; font-size:9px; line-height:1.2; }
+.notification-popover { position:absolute; z-index:20; top:46px; right:0; width:min(360px,calc(100vw - 36px)); padding:12px; border:1px solid var(--line); border-radius:12px; background:var(--panel); box-shadow:0 16px 42px rgba(22,33,43,.14); }
+.notification-popover-heading { display:flex; align-items:center; justify-content:space-between; padding:4px 4px 10px; border-bottom:1px solid var(--line); }
+.notification-empty { padding:24px 10px; color:var(--muted); text-align:center; font-size:12px; }
+.notification-item { display:flex; gap:9px; width:100%; padding:11px 8px; border:0; border-bottom:1px solid #ebe7de; background:transparent; color:var(--ink); text-align:left; }
+.notification-item:last-child { border-bottom:0; }
+.notification-item:hover,.notification-item.is-unread { background:#f5faf8; }
+.notification-item strong,.notification-item small { display:block; }
+.notification-item strong { font-size:12px; }
+.notification-item small { margin-top:4px; color:var(--muted); font-size:11px; line-height:1.4; }
+.notification-dot { width:7px; height:7px; flex:0 0 auto; margin-top:5px; border-radius:50%; background:var(--faint); }
+.notification-item.is-unread .notification-dot { background:var(--signal); }
+@media (max-width:760px) { .notification-menu { display:none; } }
+
+
+/* Account security */
+.password-required-banner { display:flex; align-items:center; justify-content:space-between; gap:18px; margin:18px 44px 0; padding:12px 16px; border:1px solid #d6a33b; border-radius:12px; background:#fff8e6; color:#6b4b13; }
+.password-required-banner span { display:grid; gap:3px; }
+.password-required-banner small, .field-hint { color:var(--muted); font-size:12px; }
+.account-panel { max-width:680px; }
+.account-summary { display:flex; align-items:center; gap:12px; margin-bottom:24px; }
+.account-summary div { display:grid; gap:3px; }
+.account-summary small { color:var(--muted); }
+.password-policy { display:flex; flex-wrap:wrap; gap:7px 12px; margin-top:7px; color:var(--muted); font-size:11px; }
+.password-policy .valid { color:var(--signal); }
+@media (max-width:760px) { .password-required-banner { margin:14px 18px 0; align-items:flex-start; flex-direction:column; } }

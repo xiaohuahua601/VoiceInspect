@@ -64,9 +64,32 @@ Content-Type: application/json
 ```
 
 数据集卡片参与问答检索，原始 CSV/信号/音频文件不会被当作维修手册。要把原始数据用于训练、异常检测或图表分析，需要后续的数据分析模块；知识卡片中的来源、许可证、适用边界和 SHA-256 用于审计和复现。
+## 生产启动与管理员初始化
+
+开发环境默认 SEED_DEMO_DATA=true，方便使用登录页的一键填充账户。正式部署应复制 .env.example 为 .env，替换密钥和密码，并设置 SEED_DEMO_DATA=false。迁移完成后可使用交互式脚本创建或轮换正式系统管理员，密码不会写入命令历史。
+
+执行：
+.\.venv\Scripts\alembic.exe upgrade head
+.\.venv\Scripts\python.exe scripts\provision_admin.py --username plant-admin
+
+新建或重置账号的初始密码必须在首次登录后更新；密码至少 12 位并包含大写、小写和数字。/api/v1/health/live 是容器存活检查，/api/v1/health 还会反映 Ollama、Embedding、STT、VLM、TTS 等能力是否可用。
+
 ## Docker
 
 Docker 方案会将 SQLite 和本地数据挂载到 `data/`。Ollama 默认运行在宿主机，容器内必须使用 `host.docker.internal`，不能使用容器内的 `localhost`。模型权重、密码和 `.env` 不会打包进镜像。
+
+## 生产模式、会话安全与备份
+
+生产模式必须先执行 `alembic upgrade head`，并设置 `AUTO_CREATE_SCHEMA=false`；开发模式才允许兼容性 `create_all`。登录会话已持久化，支持退出、会话撤销、过期和登录失败限流。
+
+备份数据（不包含 `.env`、模型权重和虚拟环境）：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/backup_data.py
+.\.venv\Scripts\python.exe scripts/restore_data.py data/backups/<备份目录> --confirm
+```
+
+恢复前应停止 API/Worker，恢复后执行 `alembic upgrade head`、健康检查和核心闭环验证。
 
 ## 测试
 
@@ -76,7 +99,7 @@ npm run build
 npm run verify:premium
 ```
 
-当前自动化回归已覆盖 14 个 Python 测试、前端构建和 UX 契约；AC-02/03/04/08 的正式数据集评测、性能基线和浏览器 E2E 仍需单独执行。任何未实际执行的项目都不会标记为通过。
+当前自动化回归已覆盖后端 pytest、前端构建、Vitest 和 UX 契约；具体通过数量以本次执行命令输出为准。AC-02/03/04/08 的正式数据集评测、性能基线和浏览器 E2E 仍需单独执行。任何未实际执行的项目都不会标记为通过。
 ## P2-P5 能力配置
 
 语音依赖已经写入 pyproject.toml 的 audio extra。

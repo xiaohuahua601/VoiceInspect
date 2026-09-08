@@ -29,9 +29,9 @@ from backend.providers.tts import WindowsSapiTTS
 from backend.providers.piper import PiperTTS
 from backend.providers.vision import OllamaVision
 from backend.rag.service import KnowledgeService
-from backend.repositories.advanced_models import Asset, CapabilityTask, Confirmation, SessionEvent, ToolCall, ToolDraft
+from backend.repositories.advanced_models import Asset, AuthSession, CapabilityTask, Confirmation, SessionEvent, ToolCall, ToolDraft
 from backend.repositories.db import get_db
-from backend.repositories.models import AuditEvent, Device, DiagnosisSession, FaultRecord, Message, User
+from backend.repositories.models import AuditEvent, Device, DiagnosisSession, FaultRecord, Message, ProviderConfig, User
 from backend.services.asset_security import store_asset
 from backend.services.vision_rules import apply_visual_rules, needs_visual_review
 from backend.services.diagnosis_quality import build_diagnosis_result
@@ -55,6 +55,19 @@ class MultimodalMessage(BaseModel):
 
 IMAGE_ONLY_PROMPT = "请根据图片观察结果，分析当前设备状态并给出安全检查建议。"
 IMAGE_ONLY_MESSAGE = "已上传现场图片，请分析设备状态。"
+
+
+def _runtime_settings(db: Session):
+    """Resolve persisted provider settings for new tasks without mutating global settings."""
+    runtime = settings.model_copy(deep=True)
+    rows = {row.name: row for row in db.scalars(select(ProviderConfig)).all()}
+    if rows.get("llm") and rows["llm"].model:
+        runtime.ollama_llm_model = rows["llm"].model
+    if rows.get("embedding") and rows["embedding"].model:
+        runtime.ollama_embed_model = rows["embedding"].model
+    if rows.get("vision") and rows["vision"].model:
+        runtime.ollama_vision_model = rows["vision"].model
+    return runtime
 
 
 def _device_context(device: Device | None) -> str:
@@ -113,7 +126,9 @@ class SynthesizeRequest(BaseModel):
 
 def _session_for(db: Session, session_id: str, user: User) -> DiagnosisSession:
     session = db.get(DiagnosisSession, session_id)
-    if not session or (session.user_id != user.id and user.role != UserRole.SYSTEM_ADMIN.value):
+    device = db.get(Device, session.device_id) if session and session.device_id else None
+    allowed = bool(session and (session.user_id == user.id or user.role == UserRole.SYSTEM_ADMIN.value or (device and user_can_access_device(user, device, db))))
+    if not allowed:
         raise AppError("SESSION_NOT_FOUND", "会话不存在或无权访问", 404, False, "session")
     return session
 
@@ -166,6 +181,10 @@ async def upload_asset(file: UploadFile = File(...), kind: str = Form(...), sess
 async def create_multimodal_message(payload: MultimodalMessage, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     session = _session_for(db, payload.session_id, user)
     device = db.get(Device, session.device_id) if session.device_id else None
+    runtime = _runtime_settings(db)
+    runtime_ollama = OllamaProvider(runtime)
+    runtime_knowledge = KnowledgeService(runtime_ollama)
+    runtime_vision = OllamaVision(runtime)
     text = payload.text.strip()
     transcript: dict | None = None
     observations: dict | None = None
@@ -193,7 +212,7 @@ async def create_multimodal_message(payload: MultimodalMessage, user: User = Dep
         task = _task(db, session.id, "vision", asset.id)
         db.commit()
         try:
-            result = await vision.analyze(settings.upload_dir / asset.stored_name, _vision_prompt(device, text))
+            result = await runtime_vision.analyze(settings.upload_dir / asset.stored_name, _vision_prompt(device, text))
             observations = apply_visual_rules(result.__dict__, device)
             stage_states["vision"] = "needs_review" if needs_visual_review(observations) else "succeeded"
             _task_done(task, stage_states["vision"], observations)
@@ -211,14 +230,14 @@ async def create_multimodal_message(payload: MultimodalMessage, user: User = Dep
     db.add(user_message)
     db.flush()
     _event(db, session.id, "message.input", {"message_id": user_message.id, "stages": stage_states})
-    citations = await knowledge.search(db, text, device_model=device.model if device else None, device_type=equipment_type(device), top_k=5)
+    citations = await runtime_knowledge.search(db, text, device_model=device.model if device else None, device_type=equipment_type(device), top_k=5)
     stage_states["rag"] = "succeeded" if citations else "partial"
     evidence = [f"[{item['document']} / {item['section']}] {item['quote_text']}" for item in citations]
     if observations:
         evidence.insert(0, _visual_evidence(observations))
     stage_states["llm"] = "running"
     db.commit()
-    answer, metadata = await ollama.generate(_diagnosis_prompt(device, text), evidence)
+    answer, metadata = await runtime_ollama.generate(_diagnosis_prompt(device, text), evidence)
     stage_states["llm"] = "succeeded" if answer else "failed"
     diagnosis = build_diagnosis_result(observations, citations, device)
     stage_states["completed_ms"] = round((time.perf_counter() - started) * 1000, 1)
@@ -259,6 +278,10 @@ async def stream_multimodal_message(payload: MultimodalMessage, user: User = Dep
         try:
             session = _session_for(db, payload.session_id, user)
             device = db.get(Device, session.device_id) if session.device_id else None
+            runtime = _runtime_settings(db)
+            runtime_ollama = OllamaProvider(runtime)
+            runtime_knowledge = KnowledgeService(runtime_ollama)
+            runtime_vision = OllamaVision(runtime)
             text = payload.text.strip()
             transcript: dict | None = None
             observations: dict | None = None
@@ -286,7 +309,7 @@ async def stream_multimodal_message(payload: MultimodalMessage, user: User = Dep
                 task = _task(db, session.id, "vision", asset.id)
                 db.commit()
                 try:
-                    result = await vision.analyze(settings.upload_dir / asset.stored_name, _vision_prompt(device, text))
+                    result = await runtime_vision.analyze(settings.upload_dir / asset.stored_name, _vision_prompt(device, text))
                     observations = apply_visual_rules(result.__dict__, device)
                     stage_states["vision"] = "needs_review" if needs_visual_review(observations) else "succeeded"
                     _task_done(task, stage_states["vision"], observations)
@@ -304,7 +327,7 @@ async def stream_multimodal_message(payload: MultimodalMessage, user: User = Dep
             db.add(user_message)
             db.flush()
             _event(db, session.id, "message.input", {"message_id": user_message.id, "stages": stage_states})
-            citations = await knowledge.search(db, text, device_model=device.model if device else None, device_type=equipment_type(device), top_k=5)
+            citations = await runtime_knowledge.search(db, text, device_model=device.model if device else None, device_type=equipment_type(device), top_k=5)
             stage_states["rag"] = "succeeded" if citations else "partial"
             evidence = [f"[{item['document']} / {item['section']}] {item['quote_text']}" for item in citations]
             if observations:
@@ -314,7 +337,7 @@ async def stream_multimodal_message(payload: MultimodalMessage, user: User = Dep
             yield _sse({"type": "start", "stage_states": stage_states, "message_id": user_message.id})
             answer_parts: list[str] = []
             metadata: dict[str, Any] = {}
-            async for item in ollama.stream_generate(_diagnosis_prompt(device, text), evidence):
+            async for item in runtime_ollama.stream_generate(_diagnosis_prompt(device, text), evidence):
                 if item.get("type") == "chunk":
                     content = str(item.get("content", ""))
                     answer_parts.append(content)
@@ -345,6 +368,22 @@ async def stream_multimodal_message(payload: MultimodalMessage, user: User = Dep
         yield SSE_DONE
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+@router.get("/tasks/{task_id}")
+def task_detail(task_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    task = db.get(CapabilityTask, task_id)
+    if not task:
+        raise AppError("TASK_NOT_FOUND", "能力任务不存在", 404, False, "task")
+    _session_for(db, task.session_id, user)
+    return {"id": task.id, "session_id": task.session_id, "message_id": task.message_id, "capability": task.capability, "status": task.status, "result": task.result_json, "error_code": task.error_code, "retryable": task.retryable, "started_at": task.started_at, "finished_at": task.finished_at, "created_at": task.created_at}
+
+
+@router.get("/sessions/{session_id}/events")
+def session_event_history(session_id: str, after: int = 0, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict]:
+    _session_for(db, session_id, user)
+    rows = db.scalars(select(SessionEvent).where(SessionEvent.session_id == session_id, SessionEvent.sequence > max(0, after)).order_by(SessionEvent.sequence).limit(500)).all()
+    return [{"sequence": row.sequence, "event_type": row.event_type, "payload": row.payload, "created_at": row.created_at.isoformat()} for row in rows]
+
+
 @router.post("/tasks/{task_id}/retry")
 async def retry_task(task_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     task = db.get(CapabilityTask, task_id)
@@ -374,7 +413,14 @@ async def _user_from_token(token: str | None, db: Session) -> User | None:
     if not token:
         return None
     payload = decode_access_token(token, settings.access_token_secret)
-    return db.get(User, payload.get("sub")) if payload else None
+    if not payload:
+        return None
+    if payload.get("jti"):
+        session = db.scalar(select(AuthSession).where(AuthSession.jti == payload["jti"]))
+        if not session or session.revoked_at:
+            return None
+    user = db.get(User, payload.get("sub"))
+    return user if user and user.status == "active" else None
 
 
 @router.websocket("/ws/sessions/{session_id}")
@@ -406,6 +452,11 @@ def create_tool_draft(payload: ToolDraftRequest, user: User = Depends(get_curren
     session = _session_for(db, payload.session_id, user)
     if payload.tool_name not in ALL_TOOLS:
         raise AppError("TOOL_NOT_ALLOWED", "工具不在允许列表中", 403, False, "tool")
+    device_id = payload.arguments.get("device_id")
+    if device_id:
+        device = db.get(Device, str(device_id))
+        if not device or not user_can_access_device(user, device, db):
+            raise AppError("DEVICE_FORBIDDEN", "当前账号无权使用该设备", 403, False, "tool")
     draft = ToolDraft(session_id=session.id, owner_id=user.id, tool_name=payload.tool_name, arguments=payload.arguments)
     db.add(draft)
     db.flush()
@@ -450,11 +501,14 @@ def confirm_tool(token: str, user: User = Depends(get_current_user), db: Session
             result = {"status": "created", "fault_record_id": record.id}
     elif draft.tool_name == "get_device_profile":
         device = db.get(Device, args.get("device_id"))
-        if not device:
-            raise AppError("DEVICE_NOT_FOUND", "设备不存在", 404, False, "tool")
+        if not device or not user_can_access_device(user, device, db):
+            raise AppError("DEVICE_NOT_FOUND", "设备不存在或无权访问", 404, False, "tool")
         result = {"id": device.id, "code": device.code, "model": device.model, "name": device.name, "metadata": device.metadata_json}
     elif draft.tool_name == "get_device_history":
-        result = {"records": [{"id": x.id, "symptom": x.symptom, "severity": x.severity, "status": x.status, "created_at": x.created_at.isoformat()} for x in db.scalars(select(FaultRecord).where(FaultRecord.device_id == args.get("device_id")).order_by(desc(FaultRecord.created_at)).limit(50)).all()]}
+        device = db.get(Device, args.get("device_id"))
+        if not device or not user_can_access_device(user, device, db):
+            raise AppError("DEVICE_NOT_FOUND", "设备不存在或无权访问", 404, False, "tool")
+        result = {"records": [{"id": x.id, "symptom": x.symptom, "severity": x.severity, "status": x.status, "created_at": x.created_at.isoformat()} for x in db.scalars(select(FaultRecord).where(FaultRecord.device_id == device.id).order_by(desc(FaultRecord.created_at)).limit(50)).all()]}
     elif draft.tool_name == "search_manual":
         result = {"citations": asyncio.run(knowledge.search(db, str(args.get("query", "")), top_k=5))}
     else:
@@ -474,6 +528,8 @@ def device_history(device_id: str, user: User = Depends(get_current_user), db: S
     device = db.get(Device, device_id)
     if not device:
         raise AppError("DEVICE_NOT_FOUND", "设备不存在", 404, False, "history")
+    if not user_can_access_device(user, device, db):
+        raise AppError("DEVICE_FORBIDDEN", "当前账号无权访问该设备", 403, False, "history")
     rows = db.scalars(select(FaultRecord).where(FaultRecord.device_id == device_id).order_by(desc(FaultRecord.created_at)).limit(100)).all()
     return {
         "device": {"id": device.id, "code": device.code, "model": device.model, "name": device.name},

@@ -55,6 +55,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(32), default=UserRole.OPERATOR.value)
     status: Mapped[str] = mapped_column(String(20), default="active")
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     organization_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -133,6 +134,7 @@ class KnowledgeDoc(Base):
     status: Mapped[str] = mapped_column(String(20), default="indexing")
     organization_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     chunks: Mapped[list["KnowledgeChunk"]] = relationship(back_populates="doc", cascade="all, delete-orphan")
@@ -188,6 +190,7 @@ class FaultRecord(Base):
     verified_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     closed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
 
 class FaultEvent(Base):
@@ -223,3 +226,15 @@ class ProviderConfig(Base):
     settings_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     updated_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    recipient_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(40), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(Text)
+    target_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)

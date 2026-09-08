@@ -49,6 +49,10 @@ def test_operator_is_read_only_and_supervisor_can_assign_and_reassign():
     assert assigned.status_code == 200, assigned.text
     assert assigned.json()["status"] == "in_progress"
     assert assigned.json()["assigned_to_name"] == "operator"
+    notifications = operator.get("/api/v1/notifications")
+    assert notifications.status_code == 200
+    assert any(item["kind"] == "fault_assignment" and item["target_id"] == fault_id for item in notifications.json())
+    assert supervisor.get("/api/v1/fault-records/overdue").status_code == 200
 
     detail_before = supervisor.get(f"/api/v1/fault-records/{fault_id}").json()
     repeated = supervisor.post(f"/api/v1/fault-records/{fault_id}/assign", json={"assigned_to": assigned.json()["assigned_to"], "idempotency_key": "assignment-once"})

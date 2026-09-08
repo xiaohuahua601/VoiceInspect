@@ -1,6 +1,7 @@
+import pytest
 import asyncio
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from backend.rag.service import KnowledgeService
@@ -43,3 +44,20 @@ def test_search_can_explicitly_include_dataset_cards():
         db.add(doc); db.flush(); db.add(KnowledgeChunk(doc_id=doc.id, section="card", text="字段说明", vector=[1.0, 0.0])); db.commit()
         result = asyncio.run(service.search(db, "字段", include_document_types={"dataset_card"}))
         assert result[0]["document_type"] == "dataset_card"
+
+@pytest.mark.asyncio
+async def test_embedding_failure_is_persisted_for_retry():
+    class BrokenProvider:
+        async def embed(self, texts):
+            raise RuntimeError("embedding offline")
+
+    from backend.core.errors import AppError
+    from backend.rag.service import KnowledgeService
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        with pytest.raises(AppError) as error:
+            await KnowledgeService(BrokenProvider()).ingest_text(db, "失败资料", "需要建立向量", organization_id="org")
+        assert error.value.code == "RAG_EMBEDDING_FAILED"
+        doc = db.scalar(select(KnowledgeDoc).where(KnowledgeDoc.name == "失败资料"))
+        assert doc and doc.status == "failed" and "embedding offline" in (doc.failure_reason or "")

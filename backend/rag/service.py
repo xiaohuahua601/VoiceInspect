@@ -69,11 +69,18 @@ class KnowledgeService:
         if existing:
             return existing
         pieces = chunk_text(content)
-        vectors = await self.provider.embed(pieces) if pieces else []
         metadata = {"device_model": device_model, **(source_metadata or {})}
-        doc = KnowledgeDoc(name=name, version=version, sha256=digest, status="indexed", organization_id=organization_id, metadata_json=metadata)
+        doc = KnowledgeDoc(name=name, version=version, status="indexing", organization_id=organization_id, content_text=content, metadata_json=metadata, sha256=digest)
         db.add(doc)
         db.flush()
+        try:
+            vectors = await self.provider.embed(pieces) if pieces else []
+        except Exception as exc:
+            doc.status = "failed"
+            doc.failure_reason = "向量模型不可用或返回格式错误：" + str(exc)[:500]
+            db.commit()
+            raise AppError("RAG_EMBEDDING_FAILED", "知识文档向量生成失败，请检查 Embedding Provider 后重试", 503, True, "rag") from exc
+        doc.status = "indexed"
         for index, (piece, vector) in enumerate(zip(pieces, vectors)):
             db.add(KnowledgeChunk(doc_id=doc.id, page=None, section=f"chunk-{index + 1}", text=piece, vector=vector, device_model=device_model))
         db.commit()
@@ -140,3 +147,25 @@ class KnowledgeService:
             document = fitz.open(path)
             return "\n".join(page.get_text() for page in document)
         raise AppError("RAG_UNSUPPORTED_FILE", "仅支持 TXT、DOCX 和 PDF 文件", 415, False, "rag")
+
+    async def reindex_document(self, db: Session, doc: KnowledgeDoc) -> KnowledgeDoc:
+        if not doc.content_text:
+            raise AppError("RAG_SOURCE_CONTENT_MISSING", "原始文本已不存在，无法重建向量", 409, False, "rag")
+        pieces = chunk_text(doc.content_text)
+        doc.status = "indexing"
+        doc.failure_reason = None
+        db.query(KnowledgeChunk).where(KnowledgeChunk.doc_id == doc.id).delete(synchronize_session=False)
+        db.flush()
+        try:
+            vectors = await self.provider.embed(pieces) if pieces else []
+        except Exception as exc:
+            doc.status = "failed"
+            doc.failure_reason = "向量模型不可用或返回格式错误：" + str(exc)[:500]
+            db.commit()
+            raise AppError("RAG_EMBEDDING_FAILED", "知识文档向量生成失败，请检查 Embedding Provider 后重试", 503, True, "rag") from exc
+        for index, (piece, vector) in enumerate(zip(pieces, vectors)):
+            db.add(KnowledgeChunk(doc_id=doc.id, page=None, section=f"chunk-{index + 1}", text=piece, vector=vector, device_model=(doc.metadata_json or {}).get("device_model")))
+        doc.status = "indexed"
+        db.commit()
+        db.refresh(doc)
+        return doc

@@ -150,7 +150,8 @@ def seed_demo_data() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
-    seed_demo_data()
+    if settings.seed_demo_data_enabled:
+        seed_demo_data()
     yield
 
 
@@ -158,7 +159,7 @@ app = FastAPI(title="VoiceInspect API", version="0.1.0", lifespan=lifespan)
 app.add_exception_handler(AppError, app_error_handler)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+    allow_origins=[origin.strip() for origin in settings.cors_allowed_origins.split(",") if origin.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -170,11 +171,16 @@ async def trace_middleware(request: Request, call_next):
     request.state.trace_id = request.headers.get("X-Trace-Id", str(uuid4()))
     response = await call_next(request)
     response.headers["X-Trace-Id"] = request.state.trace_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "same-origin"
+    response.headers["Permissions-Policy"] = "microphone=(self), camera=(self)"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; connect-src 'self' http://127.0.0.1:8000 http://localhost:8000 ws://127.0.0.1:8000 ws://localhost:8000 http://127.0.0.1:5173 http://localhost:5173 ws://127.0.0.1:5173 ws://localhost:5173; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'"
     return response
 
 
 @app.exception_handler(Exception)
-async def unhandled_error(_: Request, exc: Exception):
+async def unhandled_error(request: Request, exc: Exception):
     logging.exception("unhandled VoiceInspect error", exc_info=exc)
     return JSONResponse(
         status_code=500,
@@ -184,6 +190,7 @@ async def unhandled_error(_: Request, exc: Exception):
                 "message": "服务暂时不可用，请稍后重试",
                 "retryable": True,
                 "stage": "api",
+                "trace_id": getattr(request.state, "trace_id", str(uuid4())),
             }
         },
     )

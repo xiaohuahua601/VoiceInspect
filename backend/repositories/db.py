@@ -27,6 +27,8 @@ def get_db() -> Generator[Session, None, None]:
 
 def init_db() -> None:
     Path("./data/db").mkdir(parents=True, exist_ok=True)
+    if not settings.auto_create_schema:
+        return
     from backend.repositories import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)

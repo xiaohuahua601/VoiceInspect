@@ -6,6 +6,18 @@ import secrets
 import time
 
 
+def password_policy_error(password: str) -> str | None:
+    if len(password) < 12:
+        return "密码至少需要 12 个字符"
+    if not any(char.isupper() for char in password):
+        return "密码必须包含至少一个大写字母"
+    if not any(char.islower() for char in password):
+        return "密码必须包含至少一个小写字母"
+    if not any(char.isdigit() for char in password):
+        return "密码必须包含至少一个数字"
+    return None
+
+
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
     digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1)
@@ -23,8 +35,10 @@ def verify_password(password: str, encoded: str) -> bool:
         return False
 
 
-def create_access_token(user_id: str, username: str, role: str, secret: str, minutes: int) -> str:
+def create_access_token(user_id: str, username: str, role: str, secret: str, minutes: int, jti: str | None = None) -> str:
     payload = {"sub": user_id, "username": username, "role": role, "exp": int(time.time()) + minutes * 60}
+    if jti:
+        payload["jti"] = jti
     raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
     signature = hmac.new(secret.encode(), raw.encode(), hashlib.sha256).digest()
     return raw + "." + base64.urlsafe_b64encode(signature).decode().rstrip("=")

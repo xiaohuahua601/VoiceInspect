@@ -2,10 +2,11 @@ import json
 import mimetypes
 import secrets
 import time
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, Request, UploadFile
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -20,6 +21,7 @@ from backend.providers.ollama import OllamaProvider
 from backend.rag.service import KnowledgeService
 from backend.repositories.db import get_db
 from backend.repositories.models import AuditEvent, Device, DiagnosisSession, KnowledgeDoc, Message, User
+from backend.repositories.advanced_models import AuthSession
 from backend.domain.device_profiles import equipment_type
 
 
@@ -27,6 +29,7 @@ router = APIRouter(prefix="/api/v1")
 settings = get_settings()
 provider = OllamaProvider(settings)
 knowledge = KnowledgeService(provider)
+_login_failures: dict[str, tuple[int, float]] = {}
 
 
 def serialize_message(message: Message) -> dict:
@@ -47,12 +50,74 @@ def serialize_session(session: DiagnosisSession) -> dict:
 
 
 @router.post("/auth/login")
-def login(payload: LoginRequest, db: Session = Depends(get_db)) -> dict:
+def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)) -> dict:
+    now = time.time()
+    key = f"{request.client.host if request.client else 'unknown'}:{payload.username.strip().lower()}"
+    failures, locked_until = _login_failures.get(key, (0, 0))
+    if locked_until > now:
+        raise AppError("AUTH_RATE_LIMITED", "登录失败次数过多，请稍后重试", 429, True, "auth")
     user = db.scalar(select(User).where(User.username == payload.username))
-    if not user or not verify_password(payload.password, user.password_hash):
+    if not user or user.status != "active" or not verify_password(payload.password, user.password_hash):
+        attempts = failures + 1
+        _login_failures[key] = (attempts, now + settings.login_lockout_seconds if attempts >= settings.login_max_attempts else 0)
         raise AppError("AUTH_INVALID", "用户名或密码不正确", 401, False, "auth")
-    token = create_access_token(user.id, user.username, user.role, settings.access_token_secret, settings.access_token_minutes)
-    return {"access_token": token, "token_type": "bearer", "user": {"id": user.id, "username": user.username, "role": user.role, "status": user.status, "organization_id": user.organization_id}}
+    _login_failures.pop(key, None)
+    active = db.scalars(select(AuthSession).where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None), AuthSession.expires_at > datetime.now(timezone.utc))).all()
+    if len(active) >= settings.max_active_sessions_per_user:
+        oldest = sorted(active, key=lambda item: item.last_seen_at)[0]
+        oldest.revoked_at = datetime.now(timezone.utc)
+    jti = secrets.token_urlsafe(24)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_minutes)
+    token = create_access_token(user.id, user.username, user.role, settings.access_token_secret, settings.access_token_minutes, jti=jti)
+    db.add(AuthSession(user_id=user.id, jti=jti, expires_at=expires_at, user_agent=request.headers.get("user-agent"), ip_address=request.client.host if request.client else None))
+    db.commit()
+    return {"access_token": token, "token_type": "bearer", "user": {"id": user.id, "username": user.username, "role": user.role, "status": user.status, "organization_id": user.organization_id, "must_change_password": user.must_change_password}}
+
+
+def _token_payload(authorization: str | None) -> dict | None:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    from backend.core.security import decode_access_token
+    return decode_access_token(authorization[7:].strip(), settings.access_token_secret)
+
+
+@router.post("/auth/logout")
+def logout(authorization: str | None = Header(default=None), user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    payload = _token_payload(authorization)
+    if payload and payload.get("jti"):
+        session = db.scalar(select(AuthSession).where(AuthSession.jti == payload["jti"], AuthSession.user_id == user.id))
+        if session:
+            session.revoked_at = datetime.now(timezone.utc)
+    db.add(AuditEvent(trace_id=str(uuid4()), actor_id=user.id, action="auth.logout", target=user.id))
+    db.commit()
+    return {"status": "logged_out"}
+
+
+@router.get("/auth/sessions")
+def auth_sessions(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict]:
+    now = datetime.now(timezone.utc)
+    rows = db.scalars(select(AuthSession).where(AuthSession.user_id == user.id, AuthSession.expires_at > now).order_by(AuthSession.created_at.desc())).all()
+    return [{"id": row.id, "created_at": row.created_at, "last_seen_at": row.last_seen_at, "expires_at": row.expires_at, "revoked": bool(row.revoked_at)} for row in rows]
+
+
+@router.delete("/auth/sessions/{session_id}")
+def revoke_auth_session(session_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    row = db.get(AuthSession, session_id)
+    if not row or row.user_id != user.id:
+        raise AppError("AUTH_SESSION_NOT_FOUND", "登录会话不存在", 404, False, "auth")
+    row.revoked_at = datetime.now(timezone.utc)
+    db.add(AuditEvent(trace_id=str(uuid4()), actor_id=user.id, action="auth.session_revoked", target=row.id))
+    db.commit()
+    return {"status": "revoked"}
+
+
+@router.get("/health/live")
+def health_live(db: Session = Depends(get_db)) -> dict:
+    try:
+        db.execute(select(1))
+    except Exception:
+        raise AppError("DATABASE_UNAVAILABLE", "数据库暂时不可用", 503, True, "health")
+    return {"status": "ok"}
 
 
 @router.get("/health")
@@ -67,14 +132,18 @@ async def health(db: Session = Depends(get_db)) -> dict:
 
 
 @router.get("/devices")
-def list_devices(_: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict]:
-    return [{"id": item.id, "code": item.code, "model": item.model, "name": item.name} for item in db.scalars(select(Device).order_by(Device.code)).all()]
+def list_devices(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict]:
+    return [{"id": item.id, "code": item.code, "model": item.model, "name": item.name} for item in db.scalars(select(Device).order_by(Device.code)).all() if user_can_access_device(user, item, db)]
 
 
 @router.post("/sessions")
 def create_session(payload: SessionCreateRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
-    if payload.device_id and not db.get(Device, payload.device_id):
-        raise AppError("DEVICE_NOT_FOUND", "设备不存在", 404, False, "session")
+    if payload.device_id:
+        device = db.get(Device, payload.device_id)
+        if not device:
+            raise AppError("DEVICE_NOT_FOUND", "设备不存在", 404, False, "session")
+        if not user_can_access_device(user, device, db):
+            raise AppError("DEVICE_FORBIDDEN", "当前账号无权使用该设备", 403, False, "session")
     session = DiagnosisSession(user_id=user.id, device_id=payload.device_id, title=payload.title.strip())
     db.add(session)
     db.add(AuditEvent(trace_id=str(uuid4()), actor_id=user.id, action="session.created", target=session.id, details={"device_id": payload.device_id}))

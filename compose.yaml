@@ -5,6 +5,9 @@ services:
       dockerfile: Dockerfile.api
     env_file: .env
     environment:
+      APP_ENV: ${APP_ENV:-production}
+      AUTO_CREATE_SCHEMA: "false"
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-true}
       DATABASE_URL: sqlite:///./data/db/voiceinspect.db
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       UPLOAD_DIR: ./data/uploads

@@ -160,8 +160,8 @@ def parse_vision_payload(raw: str, require_observation: bool = True) -> VisionOb
 
 
 class OllamaVision:
-    def __init__(self) -> None:
-        self.settings = get_settings()
+    def __init__(self, settings=None) -> None:
+        self.settings = settings or get_settings()
 
     async def _generate_json(self, image: str, instruction: str) -> dict[str, Any]:
         payload = {

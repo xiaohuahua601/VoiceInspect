@@ -1,6 +1,6 @@
 export const apiBase = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000/api/v1'
 
-export type User = { id: string; username: string; role: string; status?: string; organization_id?: string | null; scopes?: Array<{ organization_id: string; site_id?: string | null; line_id?: string | null }> }
+export type User = { id: string; username: string; role: string; status?: string; must_change_password?: boolean; organization_id?: string | null; scopes?: Array<{ organization_id: string; site_id?: string | null; line_id?: string | null }> }
 export type Device = { id: string; code: string; name: string; model: string; organization_id?: string | null; site_id?: string | null; line_id?: string | null; metadata?: Record<string, unknown>; created_at?: string }
 export type Fault = { id: string; device_id: string; session_id?: string | null; symptom: string; severity: string; status: string; creator_id: string; assigned_to?: string | null; assigned_to_name?: string | null; resolution?: string | null; created_at: string; updated_at?: string }
 export type KnowledgeDoc = { id: string; name: string; version: string; status: string; organization_id?: string | null; failure_reason?: string | null; metadata?: Record<string, unknown>; chunks: number; created_at: string }

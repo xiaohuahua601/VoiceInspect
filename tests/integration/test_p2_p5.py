@@ -47,3 +47,15 @@ def test_fault_confirmation_is_idempotent():
     second = client.post(f"/api/v1/confirmations/{token}")
     assert first.status_code == second.status_code == 200
     assert first.json()["fault_record_id"] == second.json()["fault_record_id"]
+
+
+def test_task_detail_and_session_event_replay_are_scoped():
+    client = auth_client()
+    device = client.get("/api/v1/devices").json()[0]
+    session = client.post("/api/v1/sessions", json={"title": "事件回放测试", "device_id": device["id"]}).json()
+    events = client.get(f"/api/v1/sessions/{session['id']}/events")
+    assert events.status_code == 200
+    assert isinstance(events.json(), list)
+    missing = client.get("/api/v1/tasks/missing")
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "TASK_NOT_FOUND"

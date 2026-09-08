@@ -98,7 +98,7 @@ onMounted(load)
         <div v-if="canManageFaults && ['confirmed', 'in_progress'].includes(detail.status)" class="assignment-panel">
           <div><span class="eyebrow">ASSIGNMENT</span><h4>{{ detail.status === 'in_progress' ? '重新分派负责人' : '选择负责人并开始处理' }}</h4><p>仅显示当前故障所属组织内的在岗操作员和维修主管。</p></div>
           <div class="assignment-controls"><select v-model="selectedAssignee" aria-label="选择故障负责人"><option value="">请选择负责人</option><option v-for="candidate in assignees" :key="candidate.id" :value="candidate.id">{{ candidate.username }} · {{ candidate.role === 'maintenance_supervisor' ? '维修主管' : '操作员' }}</option></select><button class="button primary" :disabled="actionBusy || !selectedAssignee" @click="assignFault">{{ detail.status === 'in_progress' ? '保存改派' : '分派并开始' }}</button></div>
-          <textarea v-model="note" class="assignment-note" rows="2" maxlength="2000" placeholder="可选：填写分派说明或处理备注"></textarea>
+          <textarea v-model="note" class="assignment-note resize-none" rows="2" maxlength="2000" placeholder="可选：填写分派说明或处理备注"></textarea>
           <p v-if="!assignees.length" class="empty-panel">当前组织没有可分派的在岗人员，请联系系统管理员。</p>
         </div>
         <div v-if="canManageFaults" class="action-bar"><button v-if="detail.status === 'new'" class="button primary" :disabled="actionBusy" @click="transition('confirm')">确认故障</button><button v-if="detail.status === 'in_progress'" class="button secondary" :disabled="actionBusy" @click="transition('verify')">提交验证</button><button v-if="detail.status === 'pending_verification'" class="button primary" :disabled="actionBusy" @click="transition('close')">关闭故障</button></div>

@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 10 * 1024 * 1024
     access_token_minutes: int = 720
     access_token_secret: str = "voiceinspect-development-secret-change-me"
+    cors_allowed_origins: str = "http://127.0.0.1:5173,http://localhost:5173"
+    login_max_attempts: int = 5
+    login_lockout_seconds: int = 60
+    max_active_sessions_per_user: int = 5
+    auto_create_schema: bool = True
+    seed_demo_data_enabled: bool = True
     demo_operator_username: str = "operator"
     demo_operator_password: str = "change-me"
     demo_admin_username: str = "admin"
