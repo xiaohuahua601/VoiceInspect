@@ -330,7 +330,7 @@ async function streamDiagnosis(payload: Record<string, unknown>, onEvent: (event
   let buffer = ''
   const consume = (flush = false) => {
     if (flush) buffer += decoder.decode()
-    const frames = buffer.split(/\\r?\\n\\r?\\n/)
+    const frames = buffer.split(/\r?\n\r?\n/)
     buffer = frames.pop() ?? ''
     if (flush && buffer.trim()) {
       frames.push(buffer)
