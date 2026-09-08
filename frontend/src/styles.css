@@ -332,7 +332,7 @@ code { color:var(--signal); font:11px 'Cascadia Mono',Consolas,monospace; }
 .admin-shell.is-diagnosis .composer-tools { align-items:center; gap:2px; }
 .admin-shell.is-diagnosis .input-tool-button { min-height:32px; padding:0 9px; border:0; border-radius:8px; background:transparent; }
 .admin-shell.is-diagnosis .input-tool-button:hover:not(:disabled) { background:var(--signal-soft); }
-.admin-shell.is-diagnosis .composer-submit { position:absolute; top:calc(100% + 4px); right:12px; z-index:2; display:grid; min-width:40px; width:40px; height:40px; padding:0; border-radius:50%; font-size:20px; line-height:1; }
+.admin-shell.is-diagnosis .composer-submit { position:absolute; top:calc(100% + 4px); right:12px; z-index:2; display:inline-flex; min-width:116px; width:auto; height:40px; padding:0 16px; border-radius:10px; font-size:13px; line-height:1; white-space:nowrap; }
 .admin-shell.is-diagnosis .composer-submit span { transform:translateY(-1px); }
 .admin-shell.is-diagnosis .composer-submit:disabled { opacity:.45; }
 @media (max-width:700px) {
