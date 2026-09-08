@@ -39,6 +39,14 @@ class OllamaProvider:
         evidence = "\n\n".join(context or []) or "（没有检索到可靠资料）"
         return f"{system}\n\n资料依据：\n{evidence}\n\n用户问题：{prompt}"
 
+    def _generation_options(self) -> dict[str, int | float]:
+        return {
+            "temperature": 0.1,
+            "num_thread": self.settings.ollama_num_threads,
+            "num_ctx": self.settings.ollama_num_ctx,
+            "num_predict": self.settings.ollama_llm_num_predict,
+        }
+
     async def generate(self, prompt: str, context: list[str] | None = None) -> tuple[str, dict]:
         composed = self.build_prompt(prompt, context)
         started = time.perf_counter()
@@ -46,7 +54,7 @@ class OllamaProvider:
             async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
                 response = await client.post(
                     f"{self.settings.ollama_base_url}/api/generate",
-                    json={"model": self.settings.ollama_llm_model, "prompt": composed, "stream": False, "options": {"temperature": 0.1}},
+                    json={"model": self.settings.ollama_llm_model, "prompt": composed, "stream": False, "options": self._generation_options()},
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -66,7 +74,7 @@ class OllamaProvider:
                 async with client.stream(
                     "POST",
                     f"{self.settings.ollama_base_url}/api/generate",
-                    json={"model": self.settings.ollama_llm_model, "prompt": composed, "stream": True, "options": {"temperature": 0.1}},
+                    json={"model": self.settings.ollama_llm_model, "prompt": composed, "stream": True, "options": self._generation_options()},
                 ) as response:
                     response.raise_for_status()
                     async for line in response.aiter_lines():
@@ -101,4 +109,3 @@ class OllamaProvider:
             return data["embeddings"]
         except (httpx.HTTPError, KeyError, ValueError) as exc:
             raise AppError("RAG_EMBED_FAILED", "知识向量生成失败", 503, True, "rag", {"reason": str(exc)}) from exc
-

@@ -170,7 +170,12 @@ class OllamaVision:
             "images": [image],
             "stream": False,
             "format": "json",
-            "options": {"temperature": 0},
+            "options": {
+                "temperature": 0,
+                "num_thread": self.settings.ollama_num_threads,
+                "num_ctx": self.settings.ollama_num_ctx,
+                "num_predict": self.settings.ollama_vision_num_predict,
+            },
         }
         async with httpx.AsyncClient(timeout=self.settings.ollama_timeout_seconds, trust_env=False) as client:
             response = await client.post(f"{self.settings.ollama_base_url}/api/generate", json=payload)
@@ -180,12 +185,13 @@ class OllamaVision:
     async def analyze(self, path: Path, prompt: str) -> VisionObservation:
         if not self.settings.ollama_vision_model:
             raise RuntimeError("未配置 OLLAMA_VISION_MODEL")
-        image = base64.b64encode(prepare_image_bytes(path)).decode("ascii")
+        image = base64.b64encode(prepare_image_bytes(path, max_size=self.settings.vision_image_max_size)).decode("ascii")
         fact_instruction = (
             "你是工业设备视觉取证助手。第一轮只记录图片中能直接看见的客观事实，不要猜测内部故障。"
-            "只返回 JSON，字段必须为 scene_summary, equipment_type, component, image_quality, observations, measurements, uncertainties, safety_flags。"
+            "只返回 JSON，字段必须为 scene_summary, equipment_type, component, image_quality, observations, measurements, candidate_anomalies, uncertainties, safety_flags。"
             "image_quality 包含 usable 和 issues；observations 是对象数组，每项包含 description、evidence、confidence(0到1)；"
             "measurements 是 name、value、unit、confidence；无法读出的值填 null。"
+            "candidate_anomalies 是有图片证据支持的疑似异常数组，每项包含 code、description、evidence、severity、confidence；没有证据时返回空数组。"
             "请特别检查仪表读数、报警灯/故障码、开盖或裸露部件、泄漏、裂纹、烧蚀、异常颜色、锈蚀和部件缺失。"
             "设备上下文和现场问题：\n" + prompt
         )
@@ -208,16 +214,19 @@ class OllamaVision:
             "如果没有充分证据，candidate_anomalies 返回空数组，并在 uncertainties 说明需要补充的照片或数据；不得为了满足格式强行报故障。"
             "\n客观事实：" + fact_dump + "\n现场问题：" + prompt
         )
-        try:
-            anomaly = await self._generate_json(image, anomaly_instruction)
-            anomaly_payload = VisionPayload.model_validate({**facts, **anomaly})
-            fact_result.candidate_anomalies = [item.model_dump() for item in anomaly_payload.candidate_anomalies]
-            fact_result.suspected_anomalies = anomaly_payload.suspected_anomalies
-            fact_result.uncertainties = list(dict.fromkeys(fact_result.uncertainties + anomaly_payload.uncertainties))
-            fact_result.safety_flags = list(dict.fromkeys(fact_result.safety_flags + anomaly_payload.safety_flags))
-        except (RuntimeError, ValidationError, httpx.HTTPError):
-            # Objective observations remain useful when the second judgment pass fails.
-            fact_result.uncertainties = list(dict.fromkeys(fact_result.uncertainties + ["异常复核阶段不可用，候选异常需要人工确认"]))
+        if self.settings.vision_anomaly_second_pass:
+            try:
+                anomaly = await self._generate_json(image, anomaly_instruction)
+                anomaly_payload = VisionPayload.model_validate({**facts, **anomaly})
+                fact_result.candidate_anomalies = [item.model_dump() for item in anomaly_payload.candidate_anomalies]
+                fact_result.suspected_anomalies = anomaly_payload.suspected_anomalies
+                fact_result.uncertainties = list(dict.fromkeys(fact_result.uncertainties + anomaly_payload.uncertainties))
+                fact_result.safety_flags = list(dict.fromkeys(fact_result.safety_flags + anomaly_payload.safety_flags))
+            except (RuntimeError, ValidationError, httpx.HTTPError):
+                # Objective observations remain useful when the second judgment pass fails.
+                fact_result.uncertainties = list(dict.fromkeys(fact_result.uncertainties + ["异常复核阶段不可用，候选异常需要人工确认"]))
+        else:
+            fact_result.uncertainties = list(dict.fromkeys(fact_result.uncertainties + ["当前使用单轮视觉分析，疑似异常需要人工确认"]))
         return fact_result
 
     async def health(self) -> ProviderHealth:

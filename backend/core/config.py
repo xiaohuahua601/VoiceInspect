@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     ollama_embed_model: str = "quentinz/bge-large-zh-v1.5:latest"
     ollama_vision_model: str | None = None
     ollama_timeout_seconds: float = 90.0
+    ollama_num_threads: int = 4
+    ollama_num_ctx: int = 2048
+    ollama_llm_num_predict: int = 512
+    ollama_vision_num_predict: int = 256
+    vision_image_max_size: int = 1024
+    vision_anomaly_second_pass: bool = False
     stt_model_size: str = "small"
     stt_device: str = "cpu"
     stt_compute_type: str = "int8"
