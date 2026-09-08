@@ -34,10 +34,11 @@ def test_refresh_rotates_bearer_session():
 
 def test_failed_login_is_rate_limited_after_threshold():
     with TestClient(app) as client:
+        username = f"rate-limit-check-{uuid4().hex}"
         for _ in range(5):
-            response = client.post("/api/v1/auth/login", json={"username": "rate-limit-check", "password": "wrong"})
+            response = client.post("/api/v1/auth/login", json={"username": username, "password": "wrong"})
             assert response.status_code == 401
-        locked = client.post("/api/v1/auth/login", json={"username": "rate-limit-check", "password": "wrong"})
+        locked = client.post("/api/v1/auth/login", json={"username": username, "password": "wrong"})
         assert locked.status_code == 429
         assert locked.json()["error"]["code"] == "AUTH_RATE_LIMITED"
 

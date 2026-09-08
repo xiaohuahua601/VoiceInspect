@@ -27,6 +27,14 @@ def test_capability_health_and_asset_signature_validation():
     assert invalid.status_code == 415
     assert invalid.json()["error"]["code"] == "IMAGE_SIGNATURE_INVALID"
 
+    recorded = client.post(
+        "/api/v1/assets",
+        files={"file": ("现场录音.webm", b"\x1a\x45\xdf\xa3\x93\x42\x82\x88", "audio/webm;codecs=opus")},
+        data={"kind": "audio"},
+    )
+    assert recorded.status_code == 200, recorded.text
+    assert recorded.json()["mime_type"] == "audio/webm"
+
 
 def test_fault_confirmation_is_idempotent():
     client = auth_client()

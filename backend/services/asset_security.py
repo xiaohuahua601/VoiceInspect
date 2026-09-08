@@ -26,7 +26,10 @@ async def store_asset(upload: UploadFile, kind: str, owner_id: str) -> dict:
     limit = settings.max_upload_bytes
     if not raw or len(raw) > limit:
         raise AppError("UPLOAD_TOO_LARGE", "文件为空或超过大小限制", 413, False, "upload")
-    mime = (upload.content_type or "").lower()
+    # Browsers append codec parameters to MediaRecorder output, e.g.
+    # "audio/webm;codecs=opus". Validate the media type itself while keeping
+    # the persisted value canonical for downstream STT and playback logic.
+    mime = (upload.content_type or "").lower().split(";", 1)[0].strip()
     if kind == "image" and mime not in IMAGE_TYPES:
         raise AppError("IMAGE_MIME_INVALID", "图片格式不受支持", 415, False, "upload")
     if kind == "audio" and mime not in AUDIO_TYPES:
