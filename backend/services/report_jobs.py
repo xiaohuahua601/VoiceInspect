@@ -156,7 +156,7 @@ def _csv_bytes(rows: list[dict]) -> bytes:
 
 
 class _PdfReport:
-    """Small layout helper using MuPDF's built-in Simplified Chinese font."""
+    """Small layout helper with an embedded CJK font and bounded cells."""
 
     width = 595
     height = 842
@@ -175,11 +175,37 @@ class _PdfReport:
 
         self.fitz = fitz
         self.document = fitz.open()
+        candidates = (
+            Path("assets/fonts/NotoSansSC-Regular.otf"),
+            Path("/app/assets/fonts/NotoSansSC-Regular.otf"),
+            Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+            Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.otf"),
+            Path("C:/Windows/Fonts/msyh.ttc"),
+            Path("C:/Windows/Fonts/msyh.ttf"),
+        )
+        self.font_file = next((path for path in candidates if path.is_file()), None)
+        self.font_name = "voiceinspect-cjk" if self.font_file else "china-s"
         self.page = self.document.new_page(width=self.width, height=self.height)
+        self._register_font()
         self.y = 42
+
+    def _register_font(self) -> None:
+        if not self.font_file:
+            self.measure_font = self.fitz.Font("china-s")
+            return
+        try:
+            self.page.insert_font(fontname=self.font_name, fontfile=str(self.font_file))
+            self.measure_font = self.fitz.Font(fontfile=str(self.font_file))
+        except Exception:
+            # Keep local development usable when the optional system font is
+            # not available; Docker installs the embedded Noto CJK font.
+            self.font_file = None
+            self.font_name = "china-s"
+            self.measure_font = self.fitz.Font("china-s")
 
     def new_page(self) -> None:
         self.page = self.document.new_page(width=self.width, height=self.height)
+        self._register_font()
         self.y = 42
 
     def ensure(self, height: float) -> None:
@@ -194,9 +220,21 @@ class _PdfReport:
             (x if x is not None else self.left, y if y is not None else self.y),
             _clean(value, ""),
             fontsize=size,
-            fontname="china-s",
+            fontname=self.font_name,
             color=color or self.body,
         )
+
+    def fit_text(self, value: object, width: float, size: float = 7.5) -> str:
+        """Return a single-line value that cannot run into the next cell."""
+        content = _clean(value, "")
+        if not content:
+            return ""
+        if self.measure_font.text_length(content, fontsize=size) <= width:
+            return content
+        suffix = "…"
+        while content and self.measure_font.text_length(content + suffix, fontsize=size) > width:
+            content = content[:-1]
+        return (content + suffix) if content else suffix
 
     def paragraph(self, value: object, size: float = 9, color=None, width: int = 48, gap: float = 4) -> None:
         content = _clean(value, "")
@@ -226,16 +264,16 @@ class _PdfReport:
         self.text(label, size=7.5, color=self.muted, x=x, y=y)
         self.page.insert_textbox(
             self.fitz.Rect(x, y + 5, x + width, y + 23),
-            _clean(value),
+            self.fit_text(value, width, size=9),
             fontsize=9,
-            fontname="china-s",
+            fontname=self.font_name,
             color=self.body,
         )
 
     def footer(self) -> None:
         for index, page in enumerate(self.document, 1):
-            page.insert_text((self.left, self.height - 24), "VoiceInspect · 故障处理报告", fontsize=7, fontname="china-s", color=self.muted)
-            page.insert_text((self.right - 50, self.height - 24), f"第 {index} 页", fontsize=7, fontname="china-s", color=self.muted)
+            page.insert_text((self.left, self.height - 24), "VoiceInspect · 故障处理报告", fontsize=7, fontname=self.font_name, color=self.muted)
+            page.insert_text((self.right - 50, self.height - 24), f"第 {index} 页", fontsize=7, fontname=self.font_name, color=self.muted)
 
     def bytes(self) -> bytes:
         self.footer()
@@ -276,7 +314,7 @@ def _pdf_bytes(rows: list[dict], report_id: str) -> bytes:
     report.y += 70
 
     report.heading("二、故障清单", 1)
-    columns = [(44, 64, "编号"), (111, 125, "设备"), (241, 72, "故障现象"), (316, 54, "级别"), (376, 65, "状态"), (446, 105, "负责人")]
+    columns = [(44, 76, "编号"), (125, 112, "设备"), (241, 103, "故障现象"), (349, 43, "级别"), (402, 63, "状态"), (477, 74, "负责人")]
     report.page.draw_rect(report.fitz.Rect(report.left, report.y - 12, report.right, report.y + 14), color=report.navy, fill=report.navy)
     for x, _, label in columns:
         report.text(label, size=7.5, color=(1, 1, 1), x=x, y=report.y + 4)
@@ -286,12 +324,12 @@ def _pdf_bytes(rows: list[dict], report_id: str) -> bytes:
         if index % 2 == 0:
             report.page.draw_rect(report.fitz.Rect(report.left, report.y - 13, report.right, report.y + 14), color=report.pale, fill=report.pale)
         values = [
-            (44, f"{index:02d}  {_clean(row['id'])[:8]}"),
-            (111, f"{_clean(row['device_name'])[:15]} / {_clean(row['device_code'])[:10]}"),
-            (241, _clean(row["symptom"])[:13]),
-            (316, _clean(row["severity_label"])),
-            (376, _clean(row["status_label"])),
-            (446, _clean(row["assignee_name"])[:12]),
+            (44, report.fit_text(f"{index:02d} {_clean(row['id'])[:8]}", 76)),
+            (125, report.fit_text(f"{_clean(row['device_name'])} / {_clean(row['device_code'])}", 112)),
+            (241, report.fit_text(row["symptom"], 103)),
+            (349, report.fit_text(row["severity_label"], 43)),
+            (402, report.fit_text(row["status_label"], 63)),
+            (477, report.fit_text(row["assignee_name"], 74)),
         ]
         for x, value in values:
             report.text(value, size=7.5, color=report.body, x=x, y=report.y + 4)

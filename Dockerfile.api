@@ -6,6 +6,7 @@ WORKDIR /app
 COPY pyproject.toml README.md alembic.ini ./
 COPY backend ./backend
 COPY apps ./apps
+COPY assets/fonts/NotoSansSC-Regular.otf ./assets/fonts/NotoSansSC-Regular.otf
 RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir ".[audio]"
 
 RUN useradd --create-home --uid 10001 appuser && mkdir -p /app/data/db /app/data/uploads /app/data/knowledge /app/data/qdrant /app/data/logs /app/data/exports && chown -R appuser:appuser /app
