@@ -117,6 +117,18 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 .tool-button small { display: inline-block; margin-left: 0.3rem; font-variant-numeric: tabular-nums; }
 .attachment-badges { display: flex; gap: 0.4rem; align-items: center; margin-left: auto; }
 .attachment-badge { border: 1px solid var(--line-strong); border-radius: 999px; padding: 0.25rem 0.55rem; color: var(--text-muted); font-size: 0.72rem; }
+.admin-shell.is-diagnosis .attachment-previews { order:-1; display:flex; width:100%; gap:8px; flex-wrap:wrap; padding:0 0 8px; }
+.admin-shell.is-diagnosis .attachment-preview { display:flex; min-width:0; max-width:100%; align-items:center; gap:8px; padding:5px 8px; border:1px solid var(--line); border-radius:10px; background:#f7f7f3; }
+.admin-shell.is-diagnosis .attachment-image-preview,.admin-shell.is-diagnosis .attachment-audio-preview { order:-1; }
+.admin-shell.is-diagnosis .attachment-image-preview img { width:42px; height:34px; flex:0 0 auto; object-fit:cover; border-radius:6px; background:#e7ebe7; }
+.admin-shell.is-diagnosis .attachment-preview-icon { display:grid; width:34px; height:34px; flex:0 0 auto; place-items:center; border-radius:7px; background:var(--signal-soft); color:var(--signal); }
+.admin-shell.is-diagnosis .attachment-preview-copy { display:grid; min-width:0; gap:2px; }
+.admin-shell.is-diagnosis .attachment-preview-copy strong { overflow:hidden; color:var(--ink); font-size:11px; text-overflow:ellipsis; white-space:nowrap; }
+.admin-shell.is-diagnosis .attachment-preview-copy small { overflow:hidden; max-width:180px; color:var(--muted); font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+.admin-shell.is-diagnosis .attachment-preview audio { width:min(220px, 28vw); height:28px; }
+.admin-shell.is-diagnosis .attachment-remove { display:grid; width:25px; height:25px; flex:0 0 auto; place-items:center; border:0; border-radius:50%; background:transparent; color:var(--muted); font-size:17px; line-height:1; }
+.admin-shell.is-diagnosis .attachment-remove:hover { background:var(--danger-soft); color:var(--danger); }
+.admin-shell.is-diagnosis .attachment-remove:focus-visible { outline:2px solid var(--signal); outline-offset:2px; }
 .answer-actions { display: flex; justify-content: flex-end; margin-top: 1rem; }
 .dialog-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 1rem; background: rgba(19, 27, 31, 0.58); }
 .confirm-dialog { width: min(100%, 28rem); border: 1px solid var(--line-strong); border-radius: 1rem; padding: 1.4rem; background: var(--surface); box-shadow: 0 24px 80px rgba(19, 27, 31, 0.28); }
@@ -339,6 +351,7 @@ code { color:var(--signal); font:11px 'Cascadia Mono',Consolas,monospace; }
   .admin-shell.is-diagnosis .composer-entry { grid-template-columns:1fr; }
   .admin-shell.is-diagnosis .composer-submit { top:calc(100% + 4px); right:12px; justify-self:auto; min-height:40px; }
   .admin-shell.is-diagnosis .composer-actions { padding-right:62px; }
+  .admin-shell.is-diagnosis .attachment-preview audio { width:min(180px, 55vw); }
 }
 /* Status labels use outline and text, not filled blocks */
 .severity-label { display:inline-flex; align-items:center; gap:6px; color:var(--muted); font-size:12px; font-weight:650; white-space:nowrap; }
