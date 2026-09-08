@@ -17,7 +17,10 @@ class Settings(BaseSettings):
     ollama_timeout_seconds: float = 90.0
     ollama_num_threads: int = 4
     ollama_num_ctx: int = 2048
+    ollama_num_batch: int = 128
     ollama_llm_num_predict: int = 512
+    ollama_vision_num_ctx: int = 4096
+    ollama_vision_num_batch: int = 64
     ollama_vision_num_predict: int = 256
     vision_image_max_size: int = 1024
     vision_anomaly_second_pass: bool = False

@@ -173,7 +173,8 @@ class OllamaVision:
             "options": {
                 "temperature": 0,
                 "num_thread": self.settings.ollama_num_threads,
-                "num_ctx": self.settings.ollama_num_ctx,
+                "num_ctx": self.settings.ollama_vision_num_ctx,
+                "num_batch": self.settings.ollama_vision_num_batch,
                 "num_predict": self.settings.ollama_vision_num_predict,
             },
         }
