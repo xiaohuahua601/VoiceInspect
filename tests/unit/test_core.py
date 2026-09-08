@@ -1,7 +1,8 @@
+import pytest
 from backend.providers.ollama import OllamaProvider
 from backend.core.security import create_access_token, decode_access_token, hash_password, verify_password
 from backend.rag.service import chunk_text, cosine
-from backend.providers.vision import VisionPayload
+from backend.providers.vision import VisionPayload, parse_vision_payload
 
 
 def test_password_hash_round_trip():
@@ -30,6 +31,11 @@ def test_vision_payload_normalizes_structured_items():
         uncertainties=[{"type": "不确定", "description": "无法确认是否存在泄漏"}],
     )
     assert payload.uncertainties == ["不确定：无法确认是否存在泄漏"]
+
+
+def test_empty_vision_payload_is_not_marked_successful():
+    with pytest.raises(RuntimeError, match="空观察结果"):
+        parse_vision_payload('{"scene_summary":"", "observations":[]}')
 
 
 def test_diagnosis_prompt_uses_fixed_markdown_sections():
