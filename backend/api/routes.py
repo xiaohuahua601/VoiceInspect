@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.api.dependencies import get_current_user, require_roles, user_can_access_device
-from backend.api.schemas import KnowledgeTextRequest, LoginRequest, MessageCreateRequest, SessionCreateRequest
+from backend.api.schemas import KnowledgeTextRequest, LoginRequest, MessageCreateRequest, SessionCreateRequest, SessionUpdateRequest
 from backend.core.config import get_settings
 from backend.core.errors import AppError
 from backend.core.security import create_access_token, hash_password, verify_password
@@ -81,6 +81,22 @@ def create_session(payload: SessionCreateRequest, user: User = Depends(get_curre
     return serialize_session(session)
 
 
+@router.patch("/sessions/{session_id}")
+def update_session(session_id: str, payload: SessionUpdateRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    session = db.get(DiagnosisSession, session_id)
+    if not session or (session.user_id != user.id and user.role != UserRole.SYSTEM_ADMIN.value):
+        raise AppError("SESSION_NOT_FOUND", "会话不存在或无权访问", 404, False, "session")
+    device = db.get(Device, payload.device_id) if payload.device_id else None
+    if payload.device_id and (not device or not user_can_access_device(user, device, db)):
+        raise AppError("DEVICE_FORBIDDEN", "当前账号无权使用该设备", 403, False, "session")
+    session.device_id = payload.device_id
+    session.updated_at = session.updated_at
+    db.add(AuditEvent(trace_id=str(uuid4()), actor_id=user.id, action="session.device_changed", target=session.id, details={"device_id": payload.device_id}))
+    db.commit()
+    db.refresh(session)
+    return serialize_session(session)
+
+
 @router.get("/sessions")
 def list_sessions(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict]:
     rows = db.scalars(select(DiagnosisSession).where(DiagnosisSession.user_id == user.id).order_by(DiagnosisSession.updated_at.desc())).all()
@@ -103,12 +119,18 @@ async def create_message(payload: MessageCreateRequest, user: User = Depends(get
     text = payload.text.strip()
     if not text:
         raise AppError("MESSAGE_EMPTY", "请输入需要诊断的问题", 422, False, "message")
+    device_id = payload.device_id or session.device_id
+    device = db.get(Device, device_id) if device_id else None
+    if device_id and (not device or not user_can_access_device(user, device, db)):
+        raise AppError("DEVICE_FORBIDDEN", "当前账号无权使用该设备", 403, False, "message")
+    if device_id != session.device_id:
+        session.device_id = device_id
     user_message = Message(session_id=session.id, role=MessageRole.USER.value, text=text, status="completed", stage_states={"input": "succeeded"})
     db.add(user_message)
     db.flush()
     stages = {"stt": "skipped", "vision": "skipped", "rag": "running", "llm": "pending", "tts": "skipped"}
     started = time.perf_counter()
-    citations = await knowledge.search(db, text, top_k=5)
+    citations = await knowledge.search(db, text, device_model=device.model if device else None, top_k=5)
     stages["rag"] = "succeeded" if citations else "partial"
     stages["llm"] = "running"
     db.commit()

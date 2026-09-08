@@ -13,6 +13,10 @@ class SessionCreateRequest(BaseModel):
     device_id: str | None = None
 
 
+class SessionUpdateRequest(BaseModel):
+    device_id: str | None = None
+
+
 class MessageCreateRequest(BaseModel):
     session_id: str
     text: str = Field(min_length=1, max_length=8000)

@@ -97,25 +97,25 @@ def seed_demo_data() -> None:
                 "code": "A-01",
                 "model": "COMPRESSOR-A",
                 "name": "空压机 A-01",
-                "metadata": {"location": "演示产线", "equipment_type": "compressor", "dataset_slugs": ["metropt-3", "iitk-air-compressor-acoustic"]},
+                "metadata": {"location": "演示产线", "equipment_type": "compressor", "dataset_slugs": ["metropt-3", "iitk-air-compressor-acoustic"], "quick_prompts": ["空压机 A-01 出现压力波动，应该按什么顺序检查？", "如何判断空压机 A-01 温度异常是冷却还是润滑问题？", "空压机 A-01 的安全阀和储气罐有哪些检查注意事项？"]},
             },
             {
                 "code": "H-01",
                 "model": "HYDRAULIC-SYSTEM-A",
                 "name": "液压试验台 H-01",
-                "metadata": {"location": "演示产线", "equipment_type": "hydraulic_system", "dataset_slugs": ["hydraulic-systems-447"]},
+                "metadata": {"location": "演示产线", "equipment_type": "hydraulic_system", "dataset_slugs": ["hydraulic-systems-447"], "quick_prompts": ["液压试验台 H-01 压力下降时，如何区分泄漏、阀滞后和蓄能器压力不足？", "液压试验台 H-01 液压泵温度升高应先检查哪些传感器和部件？", "如何根据液压试验台 H-01 的传感器数据判断冷却器效率异常？"]},
             },
             {
                 "code": "M-01",
                 "model": "MOTOR-DRIVE-A",
                 "name": "驱动电机 M-01",
-                "metadata": {"location": "演示产线", "equipment_type": "motor", "dataset_slugs": ["sensorless-drive-325"]},
+                "metadata": {"location": "演示产线", "equipment_type": "motor", "dataset_slugs": ["sensorless-drive-325"], "quick_prompts": ["驱动电机 M-01 电流波动时，应如何排查负载、轴承和驱动器？", "如何用驱动电机 M-01 的转速、扭矩和振动信号判断驱动异常？", "驱动电机 M-01 启动失败前需要检查哪些安全项？"]},
             },
             {
                 "code": "P-01",
                 "model": "INDUSTRIAL-MACHINE-A",
                 "name": "通用加工设备 P-01",
-                "metadata": {"location": "演示产线", "equipment_type": "industrial_machine", "dataset_slugs": ["ai4i-2020"]},
+                "metadata": {"location": "演示产线", "equipment_type": "industrial_machine", "dataset_slugs": ["ai4i-2020"], "quick_prompts": ["通用加工设备 P-01 出现工具磨损报警时，如何确认是否需要更换？", "通用加工设备 P-01 温度与转速同时异常时，优先检查哪些因素？", "如何区分通用加工设备 P-01 的功率故障、过载和散热异常？"]},
             },
         ]
         for item in demo_devices:
