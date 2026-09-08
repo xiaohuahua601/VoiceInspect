@@ -3,6 +3,7 @@ from backend.providers.ollama import OllamaProvider
 from backend.core.security import create_access_token, decode_access_token, hash_password, verify_password
 from backend.rag.service import chunk_text, cosine
 from backend.providers.vision import VisionPayload, parse_vision_payload
+from backend.api.advanced_routes import SSE_DONE, _visual_evidence
 
 
 def test_password_hash_round_trip():
@@ -44,3 +45,20 @@ def test_diagnosis_prompt_uses_fixed_markdown_sections():
     positions = [prompt.index(section) for section in sections]
     assert positions == sorted(positions)
     assert '不要输出原始 HTML' in prompt
+
+def test_sse_done_marker_uses_real_protocol_newlines():
+    assert SSE_DONE == "data: [DONE]\n\n"
+    assert "\\n" not in SSE_DONE
+
+
+def test_visual_evidence_preserves_anomaly_signal():
+    evidence = _visual_evidence({
+        "scene_summary": "压缩机维护面板",
+        "observations": ["温度显示 86°C"],
+        "suspected_anomalies": ["异常：温度偏高；证据：温度显示 86°C；置信度：中"],
+        "uncertainties": ["需要传感器历史曲线确认"],
+        "safety_flags": ["检修前断电泄压"],
+    })
+    assert "[图片现场证据]" in evidence
+    assert "疑似异常" in evidence
+    assert "温度显示 86°C" in evidence

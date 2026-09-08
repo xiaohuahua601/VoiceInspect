@@ -54,6 +54,37 @@ IMAGE_ONLY_PROMPT = "请根据图片观察结果，分析当前设备状态并�
 IMAGE_ONLY_MESSAGE = "已上传现场图片，请分析设备状态。"
 
 
+def _device_context(device: Device | None) -> str:
+    if not device:
+        return "当前设备：未指定"
+    return f"当前设备：{device.name}（编号 {device.code}，型号 {device.model}）"
+
+
+def _vision_prompt(device: Device | None, text: str) -> str:
+    query = text or IMAGE_ONLY_PROMPT
+    return f"{_device_context(device)}\n现场问题：{query}\n请重点识别异常，不要只描述设备类型或外观。"
+
+
+def _diagnosis_prompt(device: Device | None, text: str) -> str:
+    return (
+        f"{_device_context(device)}\n用户问题：{text}\n"
+        "请把[图片现场证据]视为现场一等证据：如果其中列出疑似异常，必须在结论中明确指出异常现象和对应图像证据；"
+        "不要因为手册资料不足就忽略图片异常，也不要把图片观察冒充已经确认的故障。"
+    )
+
+
+def _visual_evidence(observations: dict[str, Any]) -> str:
+    lines = ["[图片现场证据]"]
+    if observations.get("scene_summary"):
+        lines.append(f"场景：{observations['scene_summary']}")
+    for label, key in (("客观观察", "observations"), ("疑似异常", "suspected_anomalies"), ("不确定性", "uncertainties"), ("安全提示", "safety_flags")):
+        values = observations.get(key) or []
+        if values:
+            lines.append(f"{label}：")
+            lines.extend(f"- {item}" for item in values)
+    return "\n".join(lines)
+
+
 class ToolDraftRequest(BaseModel):
     session_id: str
     tool_name: str
@@ -118,6 +149,7 @@ async def upload_asset(file: UploadFile = File(...), kind: str = Form(...), sess
 @router.post("/messages")
 async def create_multimodal_message(payload: MultimodalMessage, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     session = _session_for(db, payload.session_id, user)
+    device = db.get(Device, session.device_id) if session.device_id else None
     text = payload.text.strip()
     transcript: dict | None = None
     observations: dict | None = None
@@ -145,7 +177,7 @@ async def create_multimodal_message(payload: MultimodalMessage, user: User = Dep
         task = _task(db, session.id, "vision", asset.id)
         db.commit()
         try:
-            result = await vision.analyze(settings.upload_dir / asset.stored_name, text or "观察设备状态")
+            result = await vision.analyze(settings.upload_dir / asset.stored_name, _vision_prompt(device, text))
             observations = result.__dict__
             stage_states["vision"] = "succeeded"
             _task_done(task, "succeeded", observations)
@@ -163,14 +195,14 @@ async def create_multimodal_message(payload: MultimodalMessage, user: User = Dep
     db.add(user_message)
     db.flush()
     _event(db, session.id, "message.input", {"message_id": user_message.id, "stages": stage_states})
-    citations = await knowledge.search(db, text, top_k=5)
+    citations = await knowledge.search(db, text, device_model=device.model if device else None, top_k=5)
     stage_states["rag"] = "succeeded" if citations else "partial"
     evidence = [f"[{item['document']} / {item['section']}] {item['quote_text']}" for item in citations]
     if observations:
-        evidence.insert(0, "图片观察：" + json.dumps(observations, ensure_ascii=False))
+        evidence.insert(0, _visual_evidence(observations))
     stage_states["llm"] = "running"
     db.commit()
-    answer, metadata = await ollama.generate(text, evidence)
+    answer, metadata = await ollama.generate(_diagnosis_prompt(device, text), evidence)
     stage_states["llm"] = "succeeded" if answer else "failed"
     stage_states["completed_ms"] = round((time.perf_counter() - started) * 1000, 1)
     result_status = "completed" if answer and not any(stage_states[x] == "failed" for x in ("stt", "vision")) else "partial"
@@ -182,6 +214,9 @@ async def create_multimodal_message(payload: MultimodalMessage, user: User = Dep
     db.refresh(assistant)
     return {"message": {"id": assistant.id, "role": assistant.role, "text": assistant.text, "status": assistant.status, "citations": assistant.citations or [], "stage_states": assistant.stage_states or {}, "observations": assistant.observations or {}, "created_at": assistant.created_at}, "metadata": metadata}
 
+
+
+SSE_DONE = "data: [DONE]\n\n"
 
 
 def _sse(event: dict[str, Any]) -> str:
@@ -206,6 +241,7 @@ async def stream_multimodal_message(payload: MultimodalMessage, user: User = Dep
     async def events():
         try:
             session = _session_for(db, payload.session_id, user)
+            device = db.get(Device, session.device_id) if session.device_id else None
             text = payload.text.strip()
             transcript: dict | None = None
             observations: dict | None = None
@@ -233,7 +269,7 @@ async def stream_multimodal_message(payload: MultimodalMessage, user: User = Dep
                 task = _task(db, session.id, "vision", asset.id)
                 db.commit()
                 try:
-                    result = await vision.analyze(settings.upload_dir / asset.stored_name, text or "观察设备状态")
+                    result = await vision.analyze(settings.upload_dir / asset.stored_name, _vision_prompt(device, text))
                     observations = result.__dict__
                     stage_states["vision"] = "succeeded"
                     _task_done(task, "succeeded", observations)
@@ -251,17 +287,17 @@ async def stream_multimodal_message(payload: MultimodalMessage, user: User = Dep
             db.add(user_message)
             db.flush()
             _event(db, session.id, "message.input", {"message_id": user_message.id, "stages": stage_states})
-            citations = await knowledge.search(db, text, top_k=5)
+            citations = await knowledge.search(db, text, device_model=device.model if device else None, top_k=5)
             stage_states["rag"] = "succeeded" if citations else "partial"
             evidence = [f"[{item['document']} / {item['section']}] {item['quote_text']}" for item in citations]
             if observations:
-                evidence.insert(0, "图片观察：" + json.dumps(observations, ensure_ascii=False))
+                evidence.insert(0, _visual_evidence(observations))
             stage_states["llm"] = "running"
             db.commit()
             yield _sse({"type": "start", "stage_states": stage_states, "message_id": user_message.id})
             answer_parts: list[str] = []
             metadata: dict[str, Any] = {}
-            async for item in ollama.stream_generate(text, evidence):
+            async for item in ollama.stream_generate(_diagnosis_prompt(device, text), evidence):
                 if item.get("type") == "chunk":
                     content = str(item.get("content", ""))
                     answer_parts.append(content)
@@ -288,7 +324,7 @@ async def stream_multimodal_message(payload: MultimodalMessage, user: User = Dep
         except Exception:
             db.rollback()
             yield _sse({"type": "error", "error": {"code": "MODEL_STREAM_FAILED", "message": "诊断回答生成失败，请重试", "retryable": True, "stage": "llm", "trace_id": str(uuid4())}})
-        yield "data: [DONE]\\n\\n"
+        yield SSE_DONE
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 @router.post("/tasks/{task_id}/retry")

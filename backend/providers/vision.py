@@ -46,6 +46,8 @@ def parse_vision_payload(raw: str) -> VisionObservation:
         raise RuntimeError("视觉模型未返回符合契约的 JSON") from exc
     if not parsed.observations:
         raise RuntimeError("视觉模型返回了空观察结果")
+    if not parsed.suspected_anomalies:
+        raise RuntimeError("视觉模型未返回异常判断")
     return VisionObservation(**parsed.model_dump())
 
 
@@ -58,10 +60,12 @@ class OllamaVision:
             raise RuntimeError("未配置 OLLAMA_VISION_MODEL")
         image = base64.b64encode(path.read_bytes()).decode("ascii")
         instruction = (
-            "你是工业设备图片观察器，只做基于图像的客观观察。不要输出 Markdown。"
+            "你是工业设备现场异常检测助手，不是普通看图描述器。只依据图像和现场问题判断可见异常，不要输出 Markdown。"
             "只返回一个 JSON 对象，字段必须完整，结构为："
-            '{"scene_summary":"场景概述","observations":["可见读数或部件"],"suspected_anomalies":["仅凭图像可疑的异常"],"uncertainties":["图像无法确认的内容"],"safety_flags":["必要安全提示"]}'
-            "observations 必须至少填写 1 条具体可见内容，优先记录仪表读数、温度、部件和外观现象。"
+            '{"scene_summary":"场景概述","observations":["可见读数或部件"],"suspected_anomalies":["异常：现象；证据：图中可见依据；置信度：高/中/低"],"uncertainties":["图像无法确认的内容"],"safety_flags":["必要安全提示"]}'
+            "先逐条记录客观事实：仪表读数、温度、报警灯、开盖状态、泄漏、裂纹、锈蚀、松动、烧蚀、异物和部件缺失。"
+            "再判断异常：只要读数明显偏高/偏低，出现泄漏、损伤、报警、异常颜色或不安全状态，必须写入 suspected_anomalies，并引用对应观察证据。"
+            "suspected_anomalies 必须至少填写 1 条；若未见明确异常，填写‘未见可从图像确认的明确异常’，并在 uncertainties 说明还需什么数据。"
             "必须区分客观观察、疑似异常、不确定性和安全提示；禁止从图片不存在的内容推断故障。\n现场问题：" + prompt
         )
         payload = {
