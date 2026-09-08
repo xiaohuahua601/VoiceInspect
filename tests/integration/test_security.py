@@ -20,6 +20,18 @@ def test_logout_revokes_persisted_bearer_session():
         assert expired.json()["error"]["code"] == "AUTH_INVALID"
 
 
+def test_refresh_rotates_bearer_session():
+    with TestClient(app) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "operator", "password": "change-me"})
+        old_token = login.json()["access_token"]
+        refreshed = client.post("/api/v1/auth/refresh", headers={"Authorization": f"Bearer {old_token}"})
+        assert refreshed.status_code == 200
+        new_token = refreshed.json()["access_token"]
+        assert new_token != old_token
+        assert client.get("/api/v1/sessions", headers={"Authorization": f"Bearer {old_token}"}).status_code == 401
+        assert client.get("/api/v1/sessions", headers={"Authorization": f"Bearer {new_token}"}).status_code == 200
+
+
 def test_failed_login_is_rate_limited_after_threshold():
     with TestClient(app) as client:
         for _ in range(5):
@@ -34,6 +46,18 @@ def test_liveness_probe_is_independent_from_model_health():
         response = client.get("/api/v1/health/live")
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
+
+
+def test_refresh_rotates_bearer_session():
+    with TestClient(app) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "operator", "password": "change-me"})
+        old_token = login.json()["access_token"]
+        refreshed = client.post("/api/v1/auth/refresh", headers={"Authorization": f"Bearer {old_token}"})
+        assert refreshed.status_code == 200
+        new_token = refreshed.json()["access_token"]
+        assert new_token != old_token
+        assert client.get("/api/v1/sessions", headers={"Authorization": f"Bearer {old_token}"}).status_code == 401
+        assert client.get("/api/v1/sessions", headers={"Authorization": f"Bearer {new_token}"}).status_code == 200
 
 
 def test_new_user_password_requires_strong_policy_and_first_login_change():

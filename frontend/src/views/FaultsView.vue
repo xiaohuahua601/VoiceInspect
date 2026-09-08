@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { getStoredUser, request, type Fault, type User } from '../api'
+import { getStoredUser, request, requestPage, type Fault, type User } from '../api'
 import PaginationControl from '../components/PaginationControl.vue'
 
 const props = defineProps<{ id?: string }>()
@@ -9,9 +9,12 @@ const detail = ref<any>(null)
 const assignees = ref<User[]>([])
 const selectedAssignee = ref('')
 const status = ref('')
+const query = ref('')
 const note = ref('')
 const page = ref(1)
 const pageSize = ref(10)
+const total = ref(0)
+const pages = ref(0)
 const loading = ref(false)
 const error = ref('')
 const notice = ref('')
@@ -19,10 +22,8 @@ const actionBusy = ref(false)
 const labels: Record<string, string> = { new: '新建', confirmed: '已确认', in_progress: '处理中', pending_verification: '待验证', closed: '已关闭' }
 const user = computed(() => getStoredUser())
 const canManageFaults = computed(() => ['maintenance_supervisor', 'system_admin'].includes(user.value?.role ?? ''))
-const pages = computed(() => Math.max(1, Math.ceil(rows.value.length / pageSize.value)))
-const pagedRows = computed(() => rows.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
-const rangeStart = computed(() => rows.value.length ? (page.value - 1) * pageSize.value + 1 : 0)
-const rangeEnd = computed(() => Math.min(page.value * pageSize.value, rows.value.length))
+const rangeStart = computed(() => total.value ? (page.value - 1) * pageSize.value + 1 : 0)
+const rangeEnd = computed(() => Math.min(page.value * pageSize.value, total.value))
 
 async function load() {
   loading.value = true
@@ -35,7 +36,8 @@ async function load() {
         assignees.value = await request<User[]>('/fault-records/assignees?fault_id=' + encodeURIComponent(props.id))
       }
     } else {
-      rows.value = await request<Fault[]>('/fault-records' + (status.value ? '?status=' + status.value : ''))
+      const result = await requestPage<Fault>('/fault-records', { page: page.value, page_size: pageSize.value, status: status.value, search: query.value })
+      rows.value = result.items; total.value = result.meta.total; pages.value = result.meta.pages
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : '故障加载失败'
@@ -80,8 +82,9 @@ async function assignFault() {
 
 watch(() => props.id, () => { page.value = 1; notice.value = ''; load() })
 watch(status, () => { page.value = 1; if (!props.id) load() })
-watch(pageSize, () => { page.value = 1 })
-watch(pages, (value) => { if (page.value > value) page.value = value })
+watch(query, () => { page.value = 1; if (!props.id) load() })
+watch(pageSize, () => { page.value = 1; if (!props.id) load() })
+watch(page, () => { if (!props.id) load() })
 onMounted(load)
 </script>
 
@@ -107,9 +110,9 @@ onMounted(load)
       </div>
     </template>
     <template v-else>
-      <div class="toolbar"><select v-model="status" aria-label="筛选故障状态"><option value="">全部状态</option><option v-for="(label, key) in labels" :key="key" :value="key">{{ label }}</option></select></div>
-      <div class="table-wrap"><table><thead><tr><th>故障现象</th><th>设备</th><th>严重级别</th><th>负责人</th><th>状态</th><th>更新时间</th><th></th></tr></thead><tbody><tr v-for="fault in pagedRows" :key="fault.id"><td><strong>{{ fault.symptom }}</strong><small>{{ fault.id.slice(0,8) }}</small></td><td>{{ fault.device_id }}</td><td><span class="severity-label" :class="'severity-' + fault.severity">{{ fault.severity }}</span></td><td>{{ fault.assigned_to_name || '待分派' }}</td><td><span class="pill" :class="'pill-' + fault.status">{{ labels[fault.status] || fault.status }}</span></td><td>{{ new Date(fault.updated_at || fault.created_at).toLocaleString('zh-CN') }}</td><td><RouterLink class="text-link" :to="'/faults/' + fault.id">查看 →</RouterLink></td></tr><tr v-if="!pagedRows.length"><td colspan="7" class="table-empty">暂无符合条件的故障记录。</td></tr></tbody></table></div>
-      <PaginationControl v-if="rows.length" v-model:page="page" v-model:page-size="pageSize" :pages="pages" :total="rows.length" :start="rangeStart" :end="rangeEnd" />
+      <div class="toolbar"><input v-model="query" placeholder="搜索故障现象、设备或负责人" aria-label="搜索故障"><select v-model="status" aria-label="筛选故障状态"><option value="">全部状态</option><option v-for="(label, key) in labels" :key="key" :value="key">{{ label }}</option></select></div>
+      <div class="table-wrap"><table><thead><tr><th>故障现象</th><th>设备</th><th>严重级别</th><th>负责人</th><th>状态</th><th>更新时间</th><th></th></tr></thead><tbody><tr v-for="fault in rows" :key="fault.id"><td><strong>{{ fault.symptom }}</strong><small>{{ fault.id.slice(0,8) }}</small></td><td>{{ fault.device_id }}</td><td><span class="severity-label" :class="'severity-' + fault.severity">{{ fault.severity }}</span></td><td>{{ fault.assigned_to_name || '待分派' }}</td><td><span class="pill" :class="'pill-' + fault.status">{{ labels[fault.status] || fault.status }}</span></td><td>{{ new Date(fault.updated_at || fault.created_at).toLocaleString('zh-CN') }}</td><td><RouterLink class="text-link" :to="'/faults/' + fault.id">查看 →</RouterLink></td></tr><tr v-if="!rows.length"><td colspan="7" class="table-empty">暂无符合条件的故障记录。</td></tr></tbody></table></div>
+      <PaginationControl v-if="total" v-model:page="page" v-model:page-size="pageSize" :pages="pages" :total="total" :start="rangeStart" :end="rangeEnd" />
     </template>
   </section>
 </template>

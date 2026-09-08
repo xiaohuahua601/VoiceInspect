@@ -20,6 +20,34 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+  worker:
+    image: voiceinspect-api:latest
+    env_file: .env
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      AUTO_CREATE_SCHEMA: "false"
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-true}
+      DATABASE_URL: sqlite:///./data/db/voiceinspect.db
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      UPLOAD_DIR: ./data/uploads
+      KNOWLEDGE_DIR: ./data/knowledge
+      LOG_DIR: ./data/logs
+      WORKER_POLL_SECONDS: ${WORKER_POLL_SECONDS:-1}
+    volumes:
+      - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      api:
+        condition: service_healthy
+    command: ["python", "-m", "backend.workers.runner"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "from pathlib import Path; import time; p=Path('/app/data/logs/worker-heartbeat.json'); assert p.exists() and time.time()-p.stat().st_mtime < 30"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    restart: unless-stopped
   web:
     build:
       context: .

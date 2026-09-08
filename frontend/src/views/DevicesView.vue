@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { request, type Device } from '../api'
+import { request, requestPage, type Device } from '../api'
 import PaginationControl from '../components/PaginationControl.vue'
 
 const props = defineProps<{ id?: string }>()
@@ -10,17 +10,12 @@ const history = ref<any[]>([])
 const query = ref('')
 const page = ref(1)
 const pageSize = ref(10)
+const total = ref(0)
+const pages = ref(0)
 const loading = ref(false)
 const error = ref('')
-const filteredRows = computed(() => {
-  const keyword = query.value.trim().toLowerCase()
-  if (!keyword) return rows.value
-  return rows.value.filter((item) => (item.code + item.name + item.model).toLowerCase().includes(keyword))
-})
-const pages = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / pageSize.value)))
-const pagedRows = computed(() => filteredRows.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
-const rangeStart = computed(() => filteredRows.value.length ? (page.value - 1) * pageSize.value + 1 : 0)
-const rangeEnd = computed(() => Math.min(page.value * pageSize.value, filteredRows.value.length))
+const rangeStart = computed(() => total.value ? (page.value - 1) * pageSize.value + 1 : 0)
+const rangeEnd = computed(() => Math.min(page.value * pageSize.value, total.value))
 
 async function load() {
   loading.value = true
@@ -30,15 +25,18 @@ async function load() {
       detail.value = await request('/devices/' + props.id)
       const result = await request<any>('/devices/' + props.id + '/history')
       history.value = result.records || []
-    } else rows.value = await request<Device[]>('/devices')
+    } else {
+      const result = await requestPage<Device>('/devices', { page: page.value, page_size: pageSize.value, search: query.value })
+      rows.value = result.items; total.value = result.meta.total; pages.value = result.meta.pages
+    }
   } catch (e) {
     error.value = e instanceof Error ? e.message : '设备加载失败'
   } finally { loading.value = false }
 }
 watch(() => props.id, () => { page.value = 1; load() })
-watch(query, () => { page.value = 1 })
-watch(pageSize, () => { page.value = 1 })
-watch(pages, (value) => { if (page.value > value) page.value = value })
+watch(query, () => { page.value = 1; load() })
+watch(pageSize, () => { page.value = 1; load() })
+watch(page, () => { if (!props.id) load() })
 onMounted(load)
 </script>
 
@@ -52,8 +50,8 @@ onMounted(load)
     </template>
     <template v-else>
       <div class="toolbar"><input v-model="query" placeholder="搜索设备编号、名称或型号" aria-label="搜索设备"></div>
-      <div class="table-wrap"><table><thead><tr><th>设备</th><th>型号</th><th>组织</th><th>状态</th><th></th></tr></thead><tbody><tr v-for="device in pagedRows" :key="device.id"><td><strong>{{ device.name }}</strong><small>{{ device.code }}</small></td><td>{{ device.model }}</td><td>{{ device.organization_id || '未绑定' }}</td><td><span class="pill pill-success">在线</span></td><td><RouterLink class="text-link" :to="'/devices/' + device.id">查看 →</RouterLink></td></tr><tr v-if="!pagedRows.length"><td colspan="5" class="table-empty">{{ rows.length ? '没有符合条件的设备。' : '暂无授权设备。' }}</td></tr></tbody></table></div>
-      <PaginationControl v-if="filteredRows.length" v-model:page="page" v-model:page-size="pageSize" :pages="pages" :total="filteredRows.length" :start="rangeStart" :end="rangeEnd" />
+      <div class="table-wrap"><table><thead><tr><th>设备</th><th>型号</th><th>组织</th><th>状态</th><th></th></tr></thead><tbody><tr v-for="device in rows" :key="device.id"><td><strong>{{ device.name }}</strong><small>{{ device.code }}</small></td><td>{{ device.model }}</td><td>{{ device.organization_id || '未绑定' }}</td><td><span class="pill pill-success">在线</span></td><td><RouterLink class="text-link" :to="'/devices/' + device.id">查看 →</RouterLink></td></tr><tr v-if="!rows.length"><td colspan="5" class="table-empty">{{ query ? '没有符合条件的设备。' : '暂无授权设备。' }}</td></tr></tbody></table></div>
+      <PaginationControl v-if="total" v-model:page="page" v-model:page-size="pageSize" :pages="pages" :total="total" :start="rangeStart" :end="rangeEnd" />
     </template>
   </section>
 </template>

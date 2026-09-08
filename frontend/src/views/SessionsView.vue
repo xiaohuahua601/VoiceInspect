@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { request, type Session } from '../api'
+import { request, requestPage, type Session } from '../api'
 import PaginationControl from '../components/PaginationControl.vue'
 import { renderMarkdown } from '../utils/markdown'
 import DiagnosticEvidence from '../components/DiagnosticEvidence.vue'
@@ -11,30 +11,28 @@ const detail = ref<any>(null)
 const query = ref('')
 const page = ref(1)
 const pageSize = ref(10)
+const total = ref(0)
+const pages = ref(0)
 const loading = ref(false)
 const error = ref('')
-const filteredRows = computed(() => {
-  const keyword = query.value.trim().toLowerCase()
-  if (!keyword) return rows.value
-  return rows.value.filter((item) => (item.title + (item.device_id ?? '')).toLowerCase().includes(keyword))
-})
-const pages = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / pageSize.value)))
-const pagedRows = computed(() => filteredRows.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
-const rangeStart = computed(() => filteredRows.value.length ? (page.value - 1) * pageSize.value + 1 : 0)
-const rangeEnd = computed(() => Math.min(page.value * pageSize.value, filteredRows.value.length))
+const rangeStart = computed(() => total.value ? (page.value - 1) * pageSize.value + 1 : 0)
+const rangeEnd = computed(() => Math.min(page.value * pageSize.value, total.value))
 
 async function load() {
   loading.value = true; error.value = ''
   try {
     if (props.id) detail.value = await request('/sessions/' + props.id)
-    else rows.value = await request<Session[]>('/sessions')
+    else {
+      const result = await requestPage<Session>('/sessions', { page: page.value, page_size: pageSize.value, search: query.value })
+      rows.value = result.items; total.value = result.meta.total; pages.value = result.meta.pages
+    }
   } catch (e) { error.value = e instanceof Error ? e.message : '会话加载失败' }
   finally { loading.value = false }
 }
 watch(() => props.id, () => { page.value = 1; load() })
-watch(query, () => { page.value = 1 })
-watch(pageSize, () => { page.value = 1 })
-watch(pages, (value) => { if (page.value > value) page.value = value })
+watch(query, () => { page.value = 1; load() })
+watch(pageSize, () => { page.value = 1; load() })
+watch(page, () => { if (!props.id) load() })
 onMounted(load)
 </script>
 
@@ -51,8 +49,8 @@ onMounted(load)
     </template>
     <template v-else>
       <div class="toolbar sessions-toolbar"><input v-model="query" placeholder="搜索会话标题或设备编号" aria-label="搜索会话"></div>
-      <div class="table-wrap"><table><thead><tr><th>会话</th><th>设备</th><th>状态</th><th>创建时间</th><th></th></tr></thead><tbody><tr v-for="item in pagedRows" :key="item.id"><td><strong>{{ item.title }}</strong><small>{{ item.id }}</small></td><td>{{ item.device_id || '未绑定' }}</td><td><span class="pill">{{ item.status }}</span></td><td>{{ new Date(item.created_at).toLocaleString('zh-CN') }}</td><td><RouterLink class="text-link" :to="'/sessions/' + item.id">详情</RouterLink></td></tr><tr v-if="!pagedRows.length"><td colspan="5" class="table-empty">{{ rows.length ? '没有符合条件的会话。' : '暂无会话，先去创建一次诊断。' }}</td></tr></tbody></table></div>
-      <PaginationControl v-if="filteredRows.length" v-model:page="page" v-model:page-size="pageSize" :pages="pages" :total="filteredRows.length" :start="rangeStart" :end="rangeEnd" />
+      <div class="table-wrap"><table><thead><tr><th>会话</th><th>设备</th><th>状态</th><th>创建时间</th><th></th></tr></thead><tbody><tr v-for="item in rows" :key="item.id"><td><strong>{{ item.title }}</strong><small>{{ item.id }}</small></td><td>{{ item.device_id || '未绑定' }}</td><td><span class="pill">{{ item.status }}</span></td><td>{{ new Date(item.created_at).toLocaleString('zh-CN') }}</td><td><RouterLink class="text-link" :to="'/sessions/' + item.id">详情</RouterLink></td></tr><tr v-if="!rows.length"><td colspan="5" class="table-empty">{{ query ? '没有符合条件的会话。' : '暂无会话，先去创建一次诊断。' }}</td></tr></tbody></table></div>
+      <PaginationControl v-if="total" v-model:page="page" v-model:page-size="pageSize" :pages="pages" :total="total" :start="rangeStart" :end="rangeEnd" />
     </template>
   </section>
 </template>

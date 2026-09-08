@@ -13,6 +13,8 @@ import AuditView from './views/AuditView.vue'
 import UsersView from './views/UsersView.vue'
 import SettingsView from './views/SettingsView.vue'
 import AccountView from './views/AccountView.vue'
+import ForbiddenView from './views/ForbiddenView.vue'
+import NotFoundView from './views/NotFoundView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -36,11 +38,13 @@ const router = createRouter({
         { path: 'reports', component: ReportsView },
         { path: 'audit', component: AuditView },
         { path: 'account', component: AccountView },
+        { path: '403', component: ForbiddenView },
+        { path: '404', component: NotFoundView },
         { path: 'users', component: UsersView, meta: { roles: ['system_admin'] } },
         { path: 'settings', component: SettingsView, meta: { roles: ['system_admin'] } },
       ],
     },
-    { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
+    { path: '/:pathMatch(.*)*', redirect: '/404' },
   ],
 })
 const pageTitles: Record<string, string> = {
@@ -66,7 +70,7 @@ router.beforeEach((to) => {
   if (to.meta.public && user) return '/dashboard'
   if (!to.meta.public && !user) return { path: '/login', query: { redirect: to.fullPath } }
   const roles = to.meta.roles as string[] | undefined
-  if (roles && !canAccess(user?.role, roles)) return '/dashboard'
+  if (roles && !canAccess(user?.role, roles)) return { path: '/403', query: { from: to.fullPath } }
   return true
 })
 export default router

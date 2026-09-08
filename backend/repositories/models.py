@@ -214,6 +214,9 @@ class ReportExport(Base):
     file_name: Mapped[str] = mapped_column(String(255))
     file_path: Mapped[str] = mapped_column(String(500))
     filters_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("background_jobs.id"), nullable=True, index=True)
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 

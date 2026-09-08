@@ -15,13 +15,13 @@ from backend.api.dependencies import get_current_user, require_roles, user_can_a
 from backend.api.schemas import KnowledgeTextRequest, LoginRequest, MessageCreateRequest, SessionCreateRequest, SessionUpdateRequest
 from backend.core.config import get_settings
 from backend.core.errors import AppError
-from backend.core.security import create_access_token, hash_password, verify_password
+from backend.core.security import create_access_token, decode_access_token, hash_password, verify_password
 from backend.domain.enums import MessageRole, UserRole
 from backend.providers.ollama import OllamaProvider
 from backend.rag.service import KnowledgeService
 from backend.repositories.db import get_db
 from backend.repositories.models import AuditEvent, Device, DiagnosisSession, KnowledgeDoc, Message, User
-from backend.repositories.advanced_models import AuthSession
+from backend.repositories.advanced_models import AuthSession, LoginAttempt
 from backend.domain.device_profiles import equipment_type
 
 
@@ -29,9 +29,6 @@ router = APIRouter(prefix="/api/v1")
 settings = get_settings()
 provider = OllamaProvider(settings)
 knowledge = KnowledgeService(provider)
-_login_failures: dict[str, tuple[int, float]] = {}
-
-
 def serialize_message(message: Message) -> dict:
     return {
         "id": message.id,
@@ -51,23 +48,40 @@ def serialize_session(session: DiagnosisSession) -> dict:
 
 @router.post("/auth/login")
 def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)) -> dict:
-    now = time.time()
-    key = f"{request.client.host if request.client else 'unknown'}:{payload.username.strip().lower()}"
-    failures, locked_until = _login_failures.get(key, (0, 0))
-    if locked_until > now:
+    now = datetime.now(timezone.utc)
+    username_key = payload.username.strip().lower()
+    ip_address = request.client.host if request.client else "unknown"
+    attempt = db.scalar(select(LoginAttempt).where(LoginAttempt.username_key == username_key, LoginAttempt.ip_address == ip_address))
+    if attempt and attempt.locked_until:
+        locked_until = attempt.locked_until.replace(tzinfo=timezone.utc) if attempt.locked_until.tzinfo is None else attempt.locked_until
+    else:
+        locked_until = None
+    if locked_until and locked_until > now:
         raise AppError("AUTH_RATE_LIMITED", "登录失败次数过多，请稍后重试", 429, True, "auth")
+    if attempt and locked_until and locked_until <= now:
+        attempt.failed_count = 0
+        attempt.locked_until = None
     user = db.scalar(select(User).where(User.username == payload.username))
     if not user or user.status != "active" or not verify_password(payload.password, user.password_hash):
-        attempts = failures + 1
-        _login_failures[key] = (attempts, now + settings.login_lockout_seconds if attempts >= settings.login_max_attempts else 0)
+        if not attempt:
+            attempt = LoginAttempt(username_key=username_key, ip_address=ip_address)
+            db.add(attempt)
+        attempt.failed_count = (attempt.failed_count or 0) + 1
+        attempt.last_attempt_at = now
+        if attempt.failed_count >= settings.login_max_attempts:
+            attempt.locked_until = now + timedelta(seconds=settings.login_lockout_seconds)
+        db.commit()
         raise AppError("AUTH_INVALID", "用户名或密码不正确", 401, False, "auth")
-    _login_failures.pop(key, None)
+    if attempt:
+        attempt.failed_count = 0
+        attempt.locked_until = None
+        attempt.last_attempt_at = now
     active = db.scalars(select(AuthSession).where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None), AuthSession.expires_at > datetime.now(timezone.utc))).all()
     if len(active) >= settings.max_active_sessions_per_user:
         oldest = sorted(active, key=lambda item: item.last_seen_at)[0]
         oldest.revoked_at = datetime.now(timezone.utc)
     jti = secrets.token_urlsafe(24)
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_minutes)
+    expires_at = now + timedelta(minutes=settings.access_token_minutes)
     token = create_access_token(user.id, user.username, user.role, settings.access_token_secret, settings.access_token_minutes, jti=jti)
     db.add(AuthSession(user_id=user.id, jti=jti, expires_at=expires_at, user_agent=request.headers.get("user-agent"), ip_address=request.client.host if request.client else None))
     db.commit()
@@ -77,8 +91,26 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
 def _token_payload(authorization: str | None) -> dict | None:
     if not authorization or not authorization.lower().startswith("bearer "):
         return None
-    from backend.core.security import decode_access_token
     return decode_access_token(authorization[7:].strip(), settings.access_token_secret)
+
+
+@router.post("/auth/refresh")
+def refresh_token(authorization: str | None = Header(default=None), user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    payload = _token_payload(authorization)
+    if not payload or not payload.get("jti"):
+        raise AppError("AUTH_INVALID", "登录状态已失效，请重新登录", 401, False, "auth")
+    current = db.scalar(select(AuthSession).where(AuthSession.jti == payload["jti"], AuthSession.user_id == user.id))
+    if not current or current.revoked_at:
+        raise AppError("AUTH_INVALID", "登录状态已失效，请重新登录", 401, False, "auth")
+    now = datetime.now(timezone.utc)
+    current.revoked_at = now
+    jti = secrets.token_urlsafe(24)
+    expires_at = now + timedelta(minutes=settings.access_token_minutes)
+    token = create_access_token(user.id, user.username, user.role, settings.access_token_secret, settings.access_token_minutes, jti=jti)
+    db.add(AuthSession(user_id=user.id, jti=jti, expires_at=expires_at, user_agent=current.user_agent, ip_address=current.ip_address))
+    db.add(AuditEvent(trace_id=str(uuid4()), actor_id=user.id, action="auth.refreshed", target=current.id))
+    db.commit()
+    return {"access_token": token, "token_type": "bearer", "user": {"id": user.id, "username": user.username, "role": user.role, "status": user.status, "organization_id": user.organization_id, "must_change_password": user.must_change_password}}
 
 
 @router.post("/auth/logout")
@@ -128,7 +160,17 @@ async def health(db: Session = Depends(get_db)) -> dict:
         db.execute(select(1))
     except Exception:
         db_ok = False
-    return {"status": "ok" if db_ok and model_health["available"] else "degraded", "database": db_ok, "ollama": model_health, "models": {"llm": settings.ollama_llm_model, "embedding": settings.ollama_embed_model, "vision": settings.ollama_vision_model}}
+    heartbeat = settings.log_dir / "worker-heartbeat.json"
+    worker_ok = False
+    worker_detail: dict = {"available": False, "reason": "worker heartbeat not found"}
+    if heartbeat.exists():
+        try:
+            age = max(0.0, datetime.now(timezone.utc).timestamp() - heartbeat.stat().st_mtime)
+            worker_ok = age <= 30
+            worker_detail = {"available": worker_ok, "age_seconds": round(age, 1), "heartbeat": json.loads(heartbeat.read_text(encoding="utf-8"))}
+        except (OSError, ValueError, json.JSONDecodeError):
+            worker_detail = {"available": False, "reason": "worker heartbeat unreadable"}
+    return {"status": "ok" if db_ok and model_health["available"] and worker_ok else "degraded", "database": db_ok, "worker": worker_detail, "ollama": model_health, "models": {"llm": settings.ollama_llm_model, "embedding": settings.ollama_embed_model, "vision": settings.ollama_vision_model}}
 
 
 @router.get("/devices")

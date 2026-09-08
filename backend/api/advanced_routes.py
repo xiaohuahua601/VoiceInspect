@@ -29,13 +29,15 @@ from backend.providers.tts import WindowsSapiTTS
 from backend.providers.piper import PiperTTS
 from backend.providers.vision import OllamaVision
 from backend.rag.service import KnowledgeService
-from backend.repositories.advanced_models import Asset, AuthSession, CapabilityTask, Confirmation, SessionEvent, ToolCall, ToolDraft
+from backend.repositories.advanced_models import Asset, AuthSession, BackgroundJob, CapabilityTask, Confirmation, JobEvent, SessionEvent, ToolCall, ToolDraft
 from backend.repositories.db import get_db
+from backend.repositories.db import SessionLocal
 from backend.repositories.models import AuditEvent, Device, DiagnosisSession, FaultRecord, Message, ProviderConfig, User
 from backend.services.asset_security import store_asset
 from backend.services.vision_rules import apply_visual_rules, needs_visual_review
 from backend.services.diagnosis_quality import build_diagnosis_result
 from backend.domain.device_profiles import equipment_type
+from backend.workers.queue import append_event, create_job, job_view, request_cancel, retry_job
 
 
 router = APIRouter(prefix="/api/v1")
@@ -177,7 +179,7 @@ async def upload_asset(file: UploadFile = File(...), kind: str = Form(...), sess
     return {"id": item.id, "kind": item.kind, "name": item.original_name, "mime_type": item.mime_type, "size_bytes": item.size_bytes, "status": item.status}
 
 
-@router.post("/messages")
+@router.post("/messages/legacy")
 async def create_multimodal_message(payload: MultimodalMessage, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     session = _session_for(db, payload.session_id, user)
     device = db.get(Device, session.device_id) if session.device_id else None
@@ -251,6 +253,22 @@ async def create_multimodal_message(payload: MultimodalMessage, user: User = Dep
     return {"message": {"id": assistant.id, "role": assistant.role, "text": assistant.text, "status": assistant.status, "citations": assistant.citations or [], "stage_states": assistant.stage_states or {}, "observations": assistant.observations or {}, "created_at": assistant.created_at}, "metadata": metadata}
 
 
+@router.post("/messages", status_code=202)
+def enqueue_multimodal_message(payload: MultimodalMessage, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    _session_for(db, payload.session_id, user)
+    if not payload.text.strip() and not payload.audio_asset_id and not payload.image_asset_id:
+        raise AppError("MESSAGE_EMPTY", "请输入文字或提供可用的语音输入，或附加现场图片", 422, False, "message")
+    job = create_job(
+        db,
+        kind="diagnosis.multimodal",
+        owner_id=user.id,
+        session_id=payload.session_id,
+        payload={**payload.model_dump(), "user_id": user.id},
+    )
+    db.commit()
+    return {"job_id": job.id, "status": job.status, "session_id": payload.session_id}
+
+
 
 SSE_DONE = "data: [DONE]\n\n"
 
@@ -272,7 +290,7 @@ def _stream_message_payload(message: Message) -> dict[str, Any]:
     }
 
 
-@router.post("/messages/stream")
+@router.post("/messages/legacy-stream")
 async def stream_multimodal_message(payload: MultimodalMessage, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> StreamingResponse:
     async def events():
         try:
@@ -368,6 +386,94 @@ async def stream_multimodal_message(payload: MultimodalMessage, user: User = Dep
         yield SSE_DONE
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.post("/messages/stream")
+def enqueue_multimodal_stream(payload: MultimodalMessage, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> StreamingResponse:
+    _session_for(db, payload.session_id, user)
+    if not payload.text.strip() and not payload.audio_asset_id and not payload.image_asset_id:
+        raise AppError("MESSAGE_EMPTY", "请输入文字或提供可用的语音输入，或附加现场图片", 422, False, "message")
+    job = create_job(
+        db,
+        kind="diagnosis.multimodal",
+        owner_id=user.id,
+        session_id=payload.session_id,
+        payload={**payload.model_dump(), "user_id": user.id},
+    )
+    db.commit()
+    job_id = job.id
+
+    async def events():
+        last_sequence = 0
+        started = time.monotonic()
+        while time.monotonic() - started < 600:
+            local = SessionLocal()
+            try:
+                rows = local.scalars(select(JobEvent).where(JobEvent.job_id == job_id, JobEvent.sequence > last_sequence).order_by(JobEvent.sequence).limit(100)).all()
+                current = local.get(BackgroundJob, job_id)
+                for item in rows:
+                    last_sequence = item.sequence
+                    payload_data = item.payload or {}
+                    if item.event_type == "queued":
+                        yield _sse({"type": "queued", "job_id": job_id})
+                    elif item.event_type == "stage":
+                        yield _sse({"type": "stage", **payload_data})
+                    elif item.event_type == "start":
+                        yield _sse({"type": "start", **payload_data, "job_id": job_id})
+                    elif item.event_type == "chunk":
+                        yield _sse({"type": "chunk", **payload_data})
+                    elif item.event_type == "complete":
+                        yield _sse({"type": "complete", **payload_data, "job_id": job_id})
+                        yield SSE_DONE
+                        return
+                    elif item.event_type == "failed":
+                        yield _sse({"type": "error", "error": {"code": current.error_code if current else "JOB_FAILED", "message": "诊断任务执行失败，请重试", "retryable": True, "stage": "job", "trace_id": str(uuid4())}})
+                        yield SSE_DONE
+                        return
+                    elif item.event_type == "cancelled":
+                        yield _sse({"type": "error", "error": {"code": "JOB_CANCELLED", "message": "诊断任务已取消", "retryable": True, "stage": "job", "trace_id": str(uuid4())}})
+                        yield SSE_DONE
+                        return
+                if current and current.status in {"failed", "cancelled"} and not rows:
+                    yield _sse({"type": "error", "error": {"code": current.error_code or "JOB_FAILED", "message": "诊断任务执行失败，请重试", "retryable": True, "stage": "job", "trace_id": str(uuid4())}})
+                    yield SSE_DONE
+                    return
+            finally:
+                local.close()
+            yield ": heartbeat\n\n"
+            await asyncio.sleep(0.5)
+        yield _sse({"type": "error", "error": {"code": "JOB_TIMEOUT", "message": "诊断任务等待超时，请稍后查看任务状态", "retryable": True, "stage": "job", "trace_id": str(uuid4())}})
+        yield SSE_DONE
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def _job_for(db: Session, job_id: str, user: User) -> BackgroundJob:
+    item = db.get(BackgroundJob, job_id)
+    if not item or (item.owner_id != user.id and user.role != UserRole.SYSTEM_ADMIN.value):
+        raise AppError("JOB_NOT_FOUND", "任务不存在或无权访问", 404, False, "job")
+    return item
+
+
+@router.get("/jobs/{job_id}")
+def job_detail(job_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    return job_view(_job_for(db, job_id, user))
+
+
+@router.post("/jobs/{job_id}/cancel")
+def job_cancel(job_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    item = _job_for(db, job_id, user)
+    if item.status in {"succeeded", "failed", "cancelled"}:
+        return job_view(item)
+    return job_view(request_cancel(db, item))
+
+
+@router.post("/jobs/{job_id}/retry")
+def job_retry(job_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    item = _job_for(db, job_id, user)
+    if item.status not in {"failed", "partial", "cancelled"}:
+        raise AppError("JOB_NOT_RETRYABLE", "当前任务状态不可重试", 409, False, "job")
+    return job_view(retry_job(db, item))
 @router.get("/tasks/{task_id}")
 def task_detail(task_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     task = db.get(CapabilityTask, task_id)

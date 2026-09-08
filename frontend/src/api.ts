@@ -7,6 +7,8 @@ export type KnowledgeDoc = { id: string; name: string; version: string; status: 
 export type AuditEvent = { id: string; trace_id: string; actor_id?: string; action: string; target?: string; result: string; details?: Record<string, unknown>; created_at: string }
 export type Session = { id: string; title: string; status: string; device_id?: string | null; created_at: string; updated_at?: string }
 export type Provider = { name: string; model?: string | null; enabled: boolean }
+export type PageMeta = { page: number; page_size: number; total: number; pages: number }
+export type PageResult<T> = { items: T[]; meta: PageMeta }
 
 export function getToken() { return localStorage.getItem('voiceinspect_token') ?? '' }
 export function getStoredUser(): User | null {
@@ -38,8 +40,19 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
     const err = new Error(error?.message ?? '服务暂时不可用')
     ;(err as Error & { code?: string; status?: number }).code = error?.code
     ;(err as Error & { code?: string; status?: number }).status = response.status
+    if (response.status === 401 && typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+      clearAuth()
+      window.location.assign(`/login?expired=1&redirect=${encodeURIComponent(window.location.pathname + window.location.search)}`)
+    }
     throw err
   }
   return data as T
+}
+export async function requestPage<T>(path: string, params: Record<string, string | number | undefined>): Promise<PageResult<T>> {
+  const query = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
+  const data = await request<PageResult<T> | T[]>(`${path}${query.toString() ? '?' + query.toString() : ''}`)
+  if (Array.isArray(data)) return { items: data, meta: { page: Number(params.page ?? 1), page_size: Number(params.page_size ?? 20), total: data.length, pages: data.length ? 1 : 0 } }
+  return data
 }
 export function fileUrl(path: string) { return `${apiBase}${path}` }

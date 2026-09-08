@@ -9,10 +9,11 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from backend.api.dependencies import get_current_user, require_roles, user_can_access_device, visible_devices
+from backend.api.pagination import normalize_page, page_result
 from backend.core.config import get_settings
 from backend.core.errors import AppError
 from backend.core.security import hash_password, password_policy_error, verify_password
@@ -29,6 +30,7 @@ from backend.repositories.models import (
     Notification, Organization, ProductionLine, ProviderConfig, ReportExport, Site, User, UserScope,
     new_id, utc_now,
 )
+from backend.workers.queue import create_job, job_view
 
 router = APIRouter(prefix="/api/v1")
 settings = get_settings()
@@ -211,8 +213,17 @@ def line_create(payload: LinePayload, user: User = Depends(require_roles(UserRol
 
 
 @router.get("/devices")
-def device_list(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict]:
-    return [_device_view(x) for x in visible_devices(user, db)]
+def device_list(page: int | None = None, page_size: int = 20, search: str | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict] | dict:
+    normalized = normalize_page(page, page_size)
+    items = [_device_view(x) for x in visible_devices(user, db)]
+    if search:
+        keyword = search.strip().lower()
+        items = [item for item in items if keyword in (item["code"] + item["name"] + item["model"]).lower()]
+    if normalized:
+        current_page, current_size = normalized
+        start = (current_page - 1) * current_size
+        return page_result(items[start:start + current_size], len(items), current_page, current_size)
+    return items
 
 
 @router.post("/devices")
@@ -242,9 +253,19 @@ def device_patch(device_id: str, payload: DevicePayload, user: User = Depends(re
 
 
 @router.get("/users")
-def user_list(user: User = Depends(require_roles(UserRole.SYSTEM_ADMIN)), db: Session = Depends(get_db)) -> list[dict]:
-    return [{"id": x.id, "username": x.username, "role": x.role, "status": x.status, "organization_id": x.organization_id, "must_change_password": x.must_change_password, "created_at": x.created_at}
-            for x in db.scalars(select(User).order_by(User.username)).all()]
+def user_list(page: int | None = None, page_size: int = 20, search: str | None = None, user: User = Depends(require_roles(UserRole.SYSTEM_ADMIN)), db: Session = Depends(get_db)) -> list[dict] | dict:
+    normalized = normalize_page(page, page_size)
+    q = select(User).order_by(User.username)
+    if search:
+        keyword = f"%{search.strip()}%"
+        q = q.where(User.username.ilike(keyword) | User.role.ilike(keyword) | User.organization_id.ilike(keyword))
+    rows = db.scalars(q).all()
+    items = [{"id": x.id, "username": x.username, "role": x.role, "status": x.status, "organization_id": x.organization_id, "must_change_password": x.must_change_password, "created_at": x.created_at} for x in rows]
+    if normalized:
+        current_page, current_size = normalized
+        start = (current_page - 1) * current_size
+        return page_result(items[start:start + current_size], len(items), current_page, current_size)
+    return items
 
 
 @router.post("/users")
@@ -321,12 +342,21 @@ def user_scopes(user_id: str, payload: ScopePayload, user: User = Depends(requir
 
 
 @router.get("/fault-records")
-def fault_list(status: str | None = None, severity: str | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict]:
+def fault_list(status: str | None = None, severity: str | None = None, search: str | None = None, page: int | None = None, page_size: int = 20, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict] | dict:
+    normalized = normalize_page(page, page_size)
     ids = {x.id for x in visible_devices(user, db)}
     q = select(FaultRecord).where(FaultRecord.device_id.in_(ids)).order_by(desc(FaultRecord.updated_at))
     if status: q = q.where(FaultRecord.status == status)
     if severity: q = q.where(FaultRecord.severity == severity)
-    return [_fault_view(x, db) for x in db.scalars(q).all()]
+    items = [_fault_view(x, db) for x in db.scalars(q).all()]
+    if search:
+        keyword = search.strip().lower()
+        items = [item for item in items if keyword in (item["symptom"] + item["device_id"] + (item["assigned_to_name"] or "")).lower()]
+    if normalized:
+        current_page, current_size = normalized
+        start = (current_page - 1) * current_size
+        return page_result(items[start:start + current_size], len(items), current_page, current_size)
+    return items
 
 
 def _fault(db: Session, fault_id: str, user: User) -> FaultRecord:
@@ -439,9 +469,15 @@ def fault_close(fault_id: str, payload: FaultAction, user: User = Depends(requir
 
 
 @router.get("/notifications")
-def notification_list(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict]:
-    rows = db.scalars(select(Notification).where(Notification.recipient_id == user.id).order_by(desc(Notification.created_at)).limit(100)).all()
-    return [{"id": x.id, "kind": x.kind, "title": x.title, "body": x.body, "target_type": x.target_type, "target_id": x.target_id, "read": bool(x.read_at), "created_at": x.created_at} for x in rows]
+def notification_list(page: int | None = None, page_size: int = 20, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict] | dict:
+    normalized = normalize_page(page, page_size)
+    rows = db.scalars(select(Notification).where(Notification.recipient_id == user.id).order_by(desc(Notification.created_at)).limit(500)).all()
+    items = [{"id": x.id, "kind": x.kind, "title": x.title, "body": x.body, "target_type": x.target_type, "target_id": x.target_id, "read": bool(x.read_at), "created_at": x.created_at} for x in rows]
+    if normalized:
+        current_page, current_size = normalized
+        start = (current_page - 1) * current_size
+        return page_result(items[start:start + current_size], len(items), current_page, current_size)
+    return items
 
 
 @router.post("/notifications/{notification_id}/read")
@@ -454,11 +490,20 @@ def notification_read(notification_id: str, user: User = Depends(get_current_use
 
 
 @router.get("/knowledge/documents")
-def knowledge_list(status: str | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict]:
+def knowledge_list(status: str | None = None, search: str | None = None, page: int | None = None, page_size: int = 20, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict] | dict:
+    normalized = normalize_page(page, page_size)
     q = select(KnowledgeDoc).order_by(desc(KnowledgeDoc.created_at))
     if user.role != UserRole.SYSTEM_ADMIN.value: q = q.where(KnowledgeDoc.organization_id == user.organization_id)
     if status: q = q.where(KnowledgeDoc.status == status)
-    return [{"id": x.id, "name": x.name, "version": x.version, "status": x.status, "organization_id": x.organization_id, "failure_reason": x.failure_reason, "metadata": x.metadata_json or {}, "chunks": len(x.chunks), "created_at": x.created_at} for x in db.scalars(q).all()]
+    items = [{"id": x.id, "name": x.name, "version": x.version, "status": x.status, "organization_id": x.organization_id, "failure_reason": x.failure_reason, "metadata": x.metadata_json or {}, "chunks": len(x.chunks), "created_at": x.created_at} for x in db.scalars(q).all()]
+    if search:
+        keyword = search.strip().lower()
+        items = [item for item in items if keyword in (item["name"] + str(item["metadata"])).lower()]
+    if normalized:
+        current_page, current_size = normalized
+        start = (current_page - 1) * current_size
+        return page_result(items[start:start + current_size], len(items), current_page, current_size)
+    return items
 
 
 @router.get("/knowledge/documents/{document_id}")
@@ -507,21 +552,34 @@ async def knowledge_retry(document_id: str, user: User = Depends(require_roles(U
 
 
 
-@router.post("/reports/faults")
+@router.post("/reports/faults", status_code=202)
 def report_faults(payload: ReportPayload, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     if payload.format not in {"csv", "pdf"}: raise AppError("REPORT_FORMAT_INVALID", "仅支持 PDF 或 CSV", 422, False, "report")
     ids = {x.id for x in visible_devices(user, db)}
-    rows = [_fault_view(x, db) for x in db.scalars(select(FaultRecord).where(FaultRecord.device_id.in_(ids)).order_by(desc(FaultRecord.created_at)).limit(500)).all()]
-    out = io.StringIO()
-    if rows:
-        writer = csv.DictWriter(out, fieldnames=list(rows[0].keys())); writer.writeheader(); writer.writerows(rows)
-    data, filename, content_type = out.getvalue().encode("utf-8-sig"), f"faults-{new_id()}.csv", "text/csv; charset=utf-8"
-    if payload.format == "pdf":
-        data, filename, content_type = _pdf_bytes(rows), f"faults-{new_id()}.pdf", "application/pdf"
-    folder = Path("./data/exports"); folder.mkdir(parents=True, exist_ok=True); path = folder / filename; path.write_bytes(data)
-    item = ReportExport(owner_id=user.id, report_type="faults", format=payload.format, file_name=filename, file_path=str(path))
-    db.add(item); _audit(db, user, "report.created", item.id, {"format": payload.format}); db.commit()
-    return {"id": item.id, "file_name": filename, "format": payload.format, "status": item.status}
+    item = ReportExport(owner_id=user.id, report_type="faults", format=payload.format, file_name="", file_path="", status="queued", filters_json={"device_ids": list(ids)})
+    db.add(item)
+    db.flush()
+    job = create_job(db, kind="report.render", owner_id=user.id, payload={"report_id": item.id}, max_attempts=2)
+    item.job_id = job.id
+    _audit(db, user, "report.created", item.id, {"format": payload.format, "job_id": job.id})
+    db.commit()
+    return {"id": item.id, "job_id": job.id, "file_name": None, "format": payload.format, "status": item.status}
+
+
+@router.get("/reports")
+def report_list(page: int | None = None, page_size: int = 20, status: str | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict] | dict:
+    normalized = normalize_page(page, page_size)
+    query = select(ReportExport).order_by(desc(ReportExport.created_at))
+    if user.role != UserRole.SYSTEM_ADMIN.value:
+        query = query.where(ReportExport.owner_id == user.id)
+    if status:
+        query = query.where(ReportExport.status == status)
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    rows = db.scalars(query).all() if not normalized else db.scalars(query.offset((normalized[0] - 1) * normalized[1]).limit(normalized[1])).all()
+    items = [{"id": item.id, "job_id": item.job_id, "report_type": item.report_type, "file_name": item.file_name or None, "format": item.format, "status": item.status, "error_code": item.error_code, "created_at": item.created_at, "completed_at": item.completed_at} for item in rows]
+    if normalized:
+        return page_result(items, total, normalized[0], normalized[1])
+    return items
 
 
 @router.get("/reports/{report_id}")
@@ -529,7 +587,7 @@ def report_detail(report_id: str, user: User = Depends(get_current_user), db: Se
     item = db.get(ReportExport, report_id)
     if not item or (item.owner_id != user.id and user.role != UserRole.SYSTEM_ADMIN.value):
         raise AppError("REPORT_NOT_FOUND", "报告不存在或无权访问", 404, False, "report")
-    return {"id": item.id, "file_name": item.file_name, "format": item.format, "status": item.status, "created_at": item.created_at}
+    return {"id": item.id, "job_id": item.job_id, "file_name": item.file_name or None, "format": item.format, "status": item.status, "error_code": item.error_code, "created_at": item.created_at, "completed_at": item.completed_at}
 
 
 @router.get("/reports/{report_id}/download")
@@ -537,6 +595,10 @@ def report_download(report_id: str, user: User = Depends(get_current_user), db: 
     item = db.get(ReportExport, report_id)
     if not item or (item.owner_id != user.id and user.role != UserRole.SYSTEM_ADMIN.value):
         raise AppError("REPORT_NOT_FOUND", "报告不存在或无权访问", 404, False, "report")
+    if item.status != "ready" or not item.file_path:
+        raise AppError("REPORT_NOT_READY", "报告仍在生成，请稍后重试", 409, True, "report")
+    if not Path(item.file_path).is_file():
+        raise AppError("REPORT_FILE_MISSING", "报告文件不存在，请重新生成", 500, True, "report")
     return FileResponse(item.file_path, filename=item.file_name)
 
 
@@ -569,7 +631,8 @@ async def settings_health(user: User = Depends(require_roles(UserRole.SYSTEM_ADM
     return {"status": "ok" if all(value.get("available") for value in checks.values()) else "degraded", "database": {"available": True}, **checks}
 
 @router.get("/sessions")
-def enterprise_session_list(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict]:
+def enterprise_session_list(page: int | None = None, page_size: int = 20, search: str | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict] | dict:
+    normalized = normalize_page(page, page_size)
     rows = db.scalars(select(DiagnosisSession).order_by(desc(DiagnosisSession.updated_at))).all()
     visible = []
     for item in rows:
@@ -588,6 +651,13 @@ def enterprise_session_list(user: User = Depends(get_current_user), db: Session 
             "created_at": item.created_at,
             "updated_at": item.updated_at,
         })
+    if search:
+        keyword = search.strip().lower()
+        visible = [item for item in visible if keyword in (item["title"] + (item["device_id"] or "")).lower()]
+    if normalized:
+        current_page, current_size = normalized
+        start = (current_page - 1) * current_size
+        return page_result(visible[start:start + current_size], len(visible), current_page, current_size)
     return visible
 
 
@@ -724,9 +794,13 @@ def enterprise_audit_events(
     trace_id: str | None = None,
     created_from: datetime | None = None,
     created_to: datetime | None = None,
+    page: int | None = None,
+    page_size: int = 20,
+    search: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> list[dict]:
+) -> list[dict] | dict:
+    normalized = normalize_page(page, page_size)
     query = select(AuditEvent).order_by(desc(AuditEvent.created_at)).limit(500)
     if user.role != UserRole.SYSTEM_ADMIN.value:
         query = query.where(AuditEvent.actor_id == user.id)
@@ -742,7 +816,9 @@ def enterprise_audit_events(
         query = query.where(AuditEvent.created_at >= created_from)
     if created_to:
         query = query.where(AuditEvent.created_at <= created_to)
-    return [
+    if search:
+        query = query.where(AuditEvent.action.contains(search) | AuditEvent.target.contains(search) | AuditEvent.trace_id.contains(search))
+    items = [
         {
             "id": event.id,
             "trace_id": event.trace_id,
@@ -755,49 +831,28 @@ def enterprise_audit_events(
         }
         for event in db.scalars(query).all()
     ]
+    if normalized:
+        current_page, current_size = normalized
+        start = (current_page - 1) * current_size
+        return page_result(items[start:start + current_size], len(items), current_page, current_size)
+    return items
 
 
-@router.post("/reports/session/{session_id}")
+@router.post("/reports/session/{session_id}", status_code=202)
 def report_session(session_id: str, payload: ReportPayload, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     session = db.get(DiagnosisSession, session_id)
     if not session or (session.user_id != user.id and user.role != UserRole.SYSTEM_ADMIN.value):
         raise AppError("SESSION_NOT_FOUND", "会话不存在或无权访问", 404, False, "report")
     if payload.format not in {"csv", "pdf"}:
         raise AppError("REPORT_FORMAT_INVALID", "仅支持 PDF 或 CSV", 422, False, "report")
-    rows = [
-        {
-            "message_id": message.id,
-            "role": message.role,
-            "status": message.status,
-            "text": message.text or "",
-            "created_at": message.created_at.isoformat(),
-            "citation_count": len(message.citations or []),
-        }
-        for message in session.messages
-    ]
-    if payload.format == "csv":
-        out = io.StringIO()
-        writer = csv.DictWriter(out, fieldnames=["message_id", "role", "status", "text", "created_at", "citation_count"])
-        writer.writeheader()
-        writer.writerows(rows)
-        data, content_type = out.getvalue().encode("utf-8-sig"), "text/csv; charset=utf-8"
-        filename = f"session-{session.id}.csv"
-    else:
-        summary_rows = [
-            {"id": row["message_id"], "device_id": session.device_id or "none", "severity": row["role"], "status": row["status"]}
-            for row in rows
-        ]
-        data, content_type = _pdf_bytes(summary_rows), "application/pdf"
-        filename = f"session-{session.id}.pdf"
-    folder = Path("./data/exports")
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / filename
-    path.write_bytes(data)
-    item = ReportExport(owner_id=user.id, report_type="session", format=payload.format, file_name=filename, file_path=str(path), filters_json={"session_id": session.id})
+    item = ReportExport(owner_id=user.id, report_type="session", format=payload.format, file_name="", file_path="", status="queued", filters_json={"session_id": session.id, "device_id": session.device_id})
     db.add(item)
-    _audit(db, user, "report.session_created", item.id, {"session_id": session.id, "format": payload.format})
+    db.flush()
+    job = create_job(db, kind="report.render", owner_id=user.id, payload={"report_id": item.id}, max_attempts=2)
+    item.job_id = job.id
+    _audit(db, user, "report.session_created", item.id, {"session_id": session.id, "format": payload.format, "job_id": job.id})
     db.commit()
-    return {"id": item.id, "file_name": filename, "format": payload.format, "status": item.status}
+    return {"id": item.id, "job_id": job.id, "file_name": None, "format": payload.format, "status": item.status}
 
 
 class UserStatusPayload(BaseModel):

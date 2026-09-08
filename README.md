@@ -1,6 +1,6 @@
 # VoiceInspect
 
-VoiceInspect 是一个本地优先的工业设备现场多模态诊断助手。当前仓库已实现 P0-P5 的本地能力骨架：账号、SQLite 持久化、文本/RAG、语音、视觉、TTS 适配器、受控工具、确认幂等和审计。
+VoiceInspect 是一个本地优先的工业设备现场多模态诊断助手，当前交付目标为 Windows Docker 环境的内部业务试点：账号、SQLite 持久化、文本/RAG、语音、视觉、TTS 适配器、受控工具、确认幂等、审计、持久化任务 Worker 和异步报告均已接入。
 
 ## 当前能力状态
 
@@ -76,7 +76,7 @@ Content-Type: application/json
 
 ## Docker
 
-Docker 方案会将 SQLite 和本地数据挂载到 `data/`。Ollama 默认运行在宿主机，容器内必须使用 `host.docker.internal`，不能使用容器内的 `localhost`。模型权重、密码和 `.env` 不会打包进镜像。
+Docker 方案包含 API、Web 和独立 Worker，SQLite、上传文件、知识库、向量索引、日志和报告均挂载到 `data/`。Ollama 默认运行在宿主机，容器内必须使用 `host.docker.internal`，不能使用容器内的 `localhost`。模型权重、密码和 `.env` 不会打包进镜像。详见 [docs/RUNBOOK.md](docs/RUNBOOK.md)。
 
 ## 生产模式、会话安全与备份
 
@@ -96,10 +96,13 @@ Docker 方案会将 SQLite 和本地数据挂载到 `data/`。Ollama 默认运�
 ```powershell
 python -m pytest
 npm run build
+npm run test:unit
 npm run verify:premium
+docker compose build api web worker
+docker compose up -d
 ```
 
-当前自动化回归已覆盖后端 pytest、前端构建、Vitest 和 UX 契约；具体通过数量以本次执行命令输出为准。AC-02/03/04/08 的正式数据集评测、性能基线和浏览器 E2E 仍需单独执行。任何未实际执行的项目都不会标记为通过。
+当前自动化回归覆盖后端 pytest、Alembic 漂移检查、前端构建、Vitest、UX 契约、Docker 健康、异步文本诊断、SSE `[DONE]` 结束标记和异步报告下载；具体通过数量以本次执行命令输出为准。AC-02/03/04/08 的正式数据集评测、性能基线和浏览器 E2E 仍需单独执行。任何未实际执行的项目都不会标记为通过。
 ## P2-P5 能力配置
 
 语音依赖已经写入 pyproject.toml 的 audio extra。
@@ -166,12 +169,13 @@ faster-whisper 首次使用需要下载 STT_MODEL_SIZE 对应权重。当前默�
 
 已实际验证：
 
-- 后端：14 项 pytest 通过
+- 后端：32 项 pytest 通过
 - Alembic：check 无待生成迁移
 - 前端：TypeScript/Vite 构建通过
-- 前端单元测试：6 项通过
-- Docker：API 与 Web 镜像构建、启动，API 健康检查通过
-- API：四角色登录、组织范围设备、故障确认幂等、非法状态转换、Provider 健康、CSV/PDF 下载通过
+- 前端单元测试：8 项通过
+- UI：UX 契约通过，严格项目审计 0 findings
+- Docker：API、Web 镜像构建并启动，Worker 复用 API 镜像且健康检查通过
+- API：四角色登录、令牌刷新、组织范围设备、故障确认幂等、非法状态转换、Provider 健康、异步诊断、SSE、CSV/PDF 异步生成和下载通过
 
 尚未作为通过项声明：
 
