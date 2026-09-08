@@ -33,6 +33,9 @@ from backend.repositories.advanced_models import Asset, CapabilityTask, Confirma
 from backend.repositories.db import get_db
 from backend.repositories.models import AuditEvent, Device, DiagnosisSession, FaultRecord, Message, User
 from backend.services.asset_security import store_asset
+from backend.services.vision_rules import apply_visual_rules, needs_visual_review
+from backend.services.diagnosis_quality import build_diagnosis_result
+from backend.domain.device_profiles import equipment_type
 
 
 router = APIRouter(prefix="/api/v1")
@@ -70,18 +73,31 @@ def _diagnosis_prompt(device: Device | None, text: str) -> str:
         f"{_device_context(device)}\n用户问题：{text}\n"
         "请把[图片现场证据]视为现场一等证据：如果其中列出疑似异常，必须在结论中明确指出异常现象和对应图像证据；"
         "不要因为手册资料不足就忽略图片异常，也不要把图片观察冒充已经确认的故障。"
+        "必须区分图片直接观察、知识库事实、可能原因和未确认内容；没有图像证据时不得给出确定性故障结论；使用固定 Markdown 标题并保持清晰换行。"
     )
+
+
+def _visual_item_text(item: Any) -> str:
+    if isinstance(item, dict):
+        detail = str(item.get("description") or item.get("name") or item.get("code") or item)
+        evidence = item.get("evidence")
+        confidence = item.get("confidence")
+        suffix = []
+        if evidence: suffix.append("证据：" + ", ".join(str(value) for value in evidence) if isinstance(evidence, list) else "证据：" + str(evidence))
+        if confidence is not None: suffix.append(f"置信度：{confidence}")
+        return detail + ("；" + "；".join(suffix) if suffix else "")
+    return str(item)
 
 
 def _visual_evidence(observations: dict[str, Any]) -> str:
     lines = ["[图片现场证据]"]
     if observations.get("scene_summary"):
         lines.append(f"场景：{observations['scene_summary']}")
-    for label, key in (("客观观察", "observations"), ("疑似异常", "suspected_anomalies"), ("不确定性", "uncertainties"), ("安全提示", "safety_flags")):
+    for label, key in (("客观观察", "observations"), ("仪表读数", "measurements"), ("候选异常", "candidate_anomalies"), ("疑似异常", "suspected_anomalies"), ("不确定性", "uncertainties"), ("安全提示", "safety_flags")):
         values = observations.get(key) or []
         if values:
             lines.append(f"{label}：")
-            lines.extend(f"- {item}" for item in values)
+            lines.extend(f"- {_visual_item_text(item)}" for item in values)
     return "\n".join(lines)
 
 
@@ -178,9 +194,9 @@ async def create_multimodal_message(payload: MultimodalMessage, user: User = Dep
         db.commit()
         try:
             result = await vision.analyze(settings.upload_dir / asset.stored_name, _vision_prompt(device, text))
-            observations = result.__dict__
-            stage_states["vision"] = "succeeded"
-            _task_done(task, "succeeded", observations)
+            observations = apply_visual_rules(result.__dict__, device)
+            stage_states["vision"] = "needs_review" if needs_visual_review(observations) else "succeeded"
+            _task_done(task, stage_states["vision"], observations)
         except Exception as exc:
             stage_states["vision"] = "failed"
             _task_done(task, "failed", {"message": str(exc)}, "VLM_UNAVAILABLE")
@@ -195,7 +211,7 @@ async def create_multimodal_message(payload: MultimodalMessage, user: User = Dep
     db.add(user_message)
     db.flush()
     _event(db, session.id, "message.input", {"message_id": user_message.id, "stages": stage_states})
-    citations = await knowledge.search(db, text, device_model=device.model if device else None, top_k=5)
+    citations = await knowledge.search(db, text, device_model=device.model if device else None, device_type=equipment_type(device), top_k=5)
     stage_states["rag"] = "succeeded" if citations else "partial"
     evidence = [f"[{item['document']} / {item['section']}] {item['quote_text']}" for item in citations]
     if observations:
@@ -204,9 +220,10 @@ async def create_multimodal_message(payload: MultimodalMessage, user: User = Dep
     db.commit()
     answer, metadata = await ollama.generate(_diagnosis_prompt(device, text), evidence)
     stage_states["llm"] = "succeeded" if answer else "failed"
+    diagnosis = build_diagnosis_result(observations, citations, device)
     stage_states["completed_ms"] = round((time.perf_counter() - started) * 1000, 1)
-    result_status = "completed" if answer and not any(stage_states[x] == "failed" for x in ("stt", "vision")) else "partial"
-    assistant = Message(session_id=session.id, role="assistant", text=answer, status=result_status, citations=citations, stage_states=stage_states, observations=observations)
+    result_status = "completed" if answer and not any(stage_states[x] in {"failed", "needs_review"} for x in ("stt", "vision")) else "partial"
+    assistant = Message(session_id=session.id, role="assistant", text=answer, status=result_status, citations=citations, stage_states=stage_states, observations={**(observations or {}), "diagnosis": diagnosis})
     db.add(assistant)
     db.add(AuditEvent(trace_id=str(uuid4()), actor_id=user.id, action="diagnosis.multimodal_completed", target=assistant.id, details={"model": metadata, "stages": stage_states}))
     _event(db, session.id, "message.completed", {"message_id": assistant.id, "stages": stage_states})
@@ -270,9 +287,9 @@ async def stream_multimodal_message(payload: MultimodalMessage, user: User = Dep
                 db.commit()
                 try:
                     result = await vision.analyze(settings.upload_dir / asset.stored_name, _vision_prompt(device, text))
-                    observations = result.__dict__
-                    stage_states["vision"] = "succeeded"
-                    _task_done(task, "succeeded", observations)
+                    observations = apply_visual_rules(result.__dict__, device)
+                    stage_states["vision"] = "needs_review" if needs_visual_review(observations) else "succeeded"
+                    _task_done(task, stage_states["vision"], observations)
                 except Exception as exc:
                     stage_states["vision"] = "failed"
                     _task_done(task, "failed", {"message": str(exc)}, "VLM_UNAVAILABLE")
@@ -287,7 +304,7 @@ async def stream_multimodal_message(payload: MultimodalMessage, user: User = Dep
             db.add(user_message)
             db.flush()
             _event(db, session.id, "message.input", {"message_id": user_message.id, "stages": stage_states})
-            citations = await knowledge.search(db, text, device_model=device.model if device else None, top_k=5)
+            citations = await knowledge.search(db, text, device_model=device.model if device else None, device_type=equipment_type(device), top_k=5)
             stage_states["rag"] = "succeeded" if citations else "partial"
             evidence = [f"[{item['document']} / {item['section']}] {item['quote_text']}" for item in citations]
             if observations:
@@ -306,9 +323,10 @@ async def stream_multimodal_message(payload: MultimodalMessage, user: User = Dep
                     metadata = item.get("metadata", {})
             answer = "".join(answer_parts).strip()
             stage_states["llm"] = "succeeded" if answer else "failed"
+            diagnosis = build_diagnosis_result(observations, citations, device)
             stage_states["completed_ms"] = round((time.perf_counter() - started) * 1000, 1)
-            result_status = "completed" if answer and not any(stage_states[x] == "failed" for x in ("stt", "vision")) else "partial"
-            assistant = Message(session_id=session.id, role="assistant", text=answer, status=result_status, citations=citations, stage_states=stage_states, observations=observations)
+            result_status = "completed" if answer and not any(stage_states[x] in {"failed", "needs_review"} for x in ("stt", "vision")) else "partial"
+            assistant = Message(session_id=session.id, role="assistant", text=answer, status=result_status, citations=citations, stage_states=stage_states, observations={**(observations or {}), "diagnosis": diagnosis})
             db.add(assistant)
             db.add(AuditEvent(trace_id=str(uuid4()), actor_id=user.id, action="diagnosis.multimodal_completed", target=assistant.id, details={"model": metadata, "citation_count": len(citations), "stages": stage_states, "streaming": True}))
             _event(db, session.id, "message.completed", {"message_id": assistant.id, "stages": stage_states})

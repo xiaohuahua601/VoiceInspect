@@ -47,6 +47,17 @@ def cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
+DIAGNOSTIC_DOCUMENT_TYPES = {
+    "manufacturer_manual",
+    "maintenance_guide",
+    "safety_guidance",
+    "fault_case",
+    # Backward-compatible names used by the first public seed.
+    "official_safety_guidance",
+    "curated_maintenance_guide",
+}
+
+
 class KnowledgeService:
     def __init__(self, provider: OllamaProvider):
         self.provider = provider
@@ -69,12 +80,27 @@ class KnowledgeService:
         db.refresh(doc)
         return doc
 
-    async def search(self, db: Session, query: str, device_model: str | None = None, top_k: int = 5) -> list[dict]:
+    async def search(
+        self,
+        db: Session,
+        query: str,
+        device_model: str | None = None,
+        top_k: int = 5,
+        include_document_types: set[str] | None = None,
+        device_type: str | None = None,
+    ) -> list[dict]:
         query_vector = (await self.provider.embed([query]))[0]
         stmt = select(KnowledgeChunk, KnowledgeDoc).join(KnowledgeDoc, KnowledgeDoc.id == KnowledgeChunk.doc_id).where(KnowledgeDoc.status == "published")
         if device_model:
             stmt = stmt.where((KnowledgeChunk.device_model == device_model) | (KnowledgeChunk.device_model.is_(None)))
         rows = db.execute(stmt).all()
+        allowed_types = include_document_types or DIAGNOSTIC_DOCUMENT_TYPES
+        rows = [
+            (chunk, doc)
+            for chunk, doc in rows
+            if (doc.metadata_json or {}).get("document_type", "maintenance_guide") in allowed_types
+            and (not device_type or not (doc.metadata_json or {}).get("device_type") or (doc.metadata_json or {}).get("device_type") == device_type)
+        ]
         scored = [(cosine(query_vector, chunk.vector or []), chunk, doc) for chunk, doc in rows]
         scored.sort(key=lambda item: item[0], reverse=True)
         return [

@@ -1,10 +1,4 @@
-"""Provider contracts shared by local AI capability adapters.
-
-Providers deliberately return typed, capability-specific results.  Business
-services decide whether a partial result is safe to use; providers never
-silently manufacture a successful answer when a model is unavailable.
-"""
-
+"""Provider contracts shared by local AI capability adapters."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -32,10 +26,15 @@ class Transcript:
 @dataclass
 class VisionObservation:
     scene_summary: str
-    observations: list[str]
-    suspected_anomalies: list[str]
+    observations: list[dict[str, Any] | str]
+    suspected_anomalies: list[dict[str, Any] | str]
     uncertainties: list[str]
     safety_flags: list[str]
+    equipment_type: str | None = None
+    component: str | None = None
+    image_quality: dict[str, Any] = field(default_factory=lambda: {"usable": True, "issues": []})
+    measurements: list[dict[str, Any]] = field(default_factory=list)
+    candidate_anomalies: list[dict[str, Any]] = field(default_factory=list)
 
 
 class STTProvider(Protocol):

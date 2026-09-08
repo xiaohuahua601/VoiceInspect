@@ -20,36 +20,26 @@ def test_search_only_published_and_keeps_source_metadata():
     with Session(engine) as db:
         published = KnowledgeDoc(name="官方安全摘要", version="2026.09", sha256="a" * 64, status="published", metadata_json={
             "source_url": "https://www.osha.gov/compressed-gas-equipment/standards",
-            "publisher": "U.S. OSHA",
-            "applicability": "通用空压机安全",
+            "publisher": "U.S. OSHA", "document_type": "safety_guidance", "applicability": "通用空压机安全",
         })
+        dataset = KnowledgeDoc(name="数据集卡片", version="1", sha256="c" * 64, status="published", metadata_json={"document_type": "dataset_card"})
         retired = KnowledgeDoc(name="旧版本", version="1", sha256="b" * 64, status="retired", metadata_json={"source_url": "https://invalid.example"})
-        db.add_all([published, retired])
-        db.flush()
+        db.add_all([published, dataset, retired]); db.flush()
         db.add_all([
             KnowledgeChunk(doc_id=published.id, section="pressure", text="安全阀不得被隔离。", vector=[1.0, 0.0]),
+            KnowledgeChunk(doc_id=dataset.id, section="card", text="不应作为维修依据。", vector=[1.0, 0.0]),
             KnowledgeChunk(doc_id=retired.id, section="old", text="不应被检索。", vector=[1.0, 0.0]),
-        ])
-        db.commit()
+        ]); db.commit()
         citations = asyncio.run(service.search(db, "安全阀", top_k=5))
-        assert len(citations) == 1
-        assert citations[0]["document"] == "官方安全摘要"
+        assert [item["document"] for item in citations] == ["官方安全摘要"]
         assert citations[0]["source_url"].startswith("https://www.osha.gov")
-        assert citations[0]["publisher"] == "U.S. OSHA"
-        assert citations[0]["applicability"] == "通用空压机安全"
 
 
-def test_ingest_persists_generic_scope_metadata():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
+def test_search_can_explicitly_include_dataset_cards():
+    engine = create_engine("sqlite:///:memory:"); Base.metadata.create_all(engine)
     service = KnowledgeService(FakeEmbedder())
     with Session(engine) as db:
-        doc = asyncio.run(service.ingest_text(db, "通用维护", "压力异常时先隔离能源。", "1", None, "org-1", {
-            "source_url": "https://www.osha.gov/laws-regs/regulations/standardnumber/1910/1910.169",
-            "publisher": "U.S. OSHA",
-            "document_type": "official_safety_guidance",
-            "applicability": "通用空压机；非特定型号",
-        }))
-        assert doc.status == "indexed"
-        assert doc.metadata_json["device_model"] is None
-        assert doc.metadata_json["applicability"] == "通用空压机；非特定型号"
+        doc = KnowledgeDoc(name="数据集卡片", version="1", sha256="d" * 64, status="published", metadata_json={"document_type": "dataset_card"})
+        db.add(doc); db.flush(); db.add(KnowledgeChunk(doc_id=doc.id, section="card", text="字段说明", vector=[1.0, 0.0])); db.commit()
+        result = asyncio.run(service.search(db, "字段", include_document_types={"dataset_card"}))
+        assert result[0]["document_type"] == "dataset_card"

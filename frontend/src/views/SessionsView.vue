@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { request, type Session } from '../api'
 import PaginationControl from '../components/PaginationControl.vue'
 import { renderMarkdown } from '../utils/markdown'
+import DiagnosticEvidence from '../components/DiagnosticEvidence.vue'
 
 const props = defineProps<{ id?: string }>()
 const rows = ref<Session[]>([])
@@ -44,7 +45,7 @@ onMounted(load)
     <div v-if="loading" class="loading-state" role="status">正在加载…</div>
     <template v-else-if="props.id && detail">
       <div class="detail-card"><div class="detail-title"><div><span class="eyebrow">{{ detail.status }}</span><h3>{{ detail.title }}</h3></div><span class="pill">{{ detail.device_id || '未绑定设备' }}</span></div>
-        <div v-for="message in detail.messages" :key="message.id" class="message-row"><span class="message-role">{{ message.role === 'user' ? '用户' : '助手' }}</span><div><p v-if="message.role === 'user'" class="session-plain-text">{{ message.text || '（无文本）' }}</p><div v-else class="answer-markdown session-answer" v-html="renderMarkdown(message.text)"></div><small>{{ new Date(message.created_at).toLocaleString('zh-CN') }}</small><div v-if="message.citations?.length" class="citation-mini">引用 {{ message.citations.length }} 条 · {{ Object.entries(message.stage_states || {}).filter(([, value]) => typeof value === 'string').map(([key, value]) => key + ':' + value).join(' / ') }}</div></div></div>
+        <div v-for="message in detail.messages" :key="message.id" class="message-row"><span class="message-role">{{ message.role === 'user' ? '用户' : '助手' }}</span><div><p v-if="message.role === 'user'" class="session-plain-text">{{ message.text || '（无文本）' }}</p><div v-else class="answer-markdown session-answer" v-html="renderMarkdown(message.text)"></div><DiagnosticEvidence :evidence="message.observations" /><small>{{ new Date(message.created_at).toLocaleString('zh-CN') }}</small><div v-if="message.citations?.length" class="citation-mini">引用 {{ message.citations.length }} 条 · {{ Object.entries(message.stage_states || {}).filter(([, value]) => typeof value === 'string').map(([key, value]) => key + ':' + value).join(' / ') }}</div></div></div>
         <div v-if="!detail.messages?.length" class="empty-panel">该会话暂无消息。</div>
       </div>
     </template>

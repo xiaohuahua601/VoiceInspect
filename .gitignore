@@ -22,3 +22,14 @@ premium-audit.json
 
 *.egg-info/
 data/datasets/raw/*
+# Versioned generic knowledge and labeled evaluation metadata; raw/user data remains ignored.
+!data/knowledge/
+!data/knowledge/packs/
+!data/knowledge/packs/**
+!data/knowledge/public/
+!data/knowledge/public/*.txt
+!data/knowledge/public/manifest.json
+!data/vision/
+!data/vision/**
+!data/datasets/derived/
+!data/datasets/derived/**

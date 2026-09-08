@@ -20,6 +20,7 @@ from backend.providers.ollama import OllamaProvider
 from backend.rag.service import KnowledgeService
 from backend.repositories.db import get_db
 from backend.repositories.models import AuditEvent, Device, DiagnosisSession, KnowledgeDoc, Message, User
+from backend.domain.device_profiles import equipment_type
 
 
 router = APIRouter(prefix="/api/v1")
@@ -36,6 +37,7 @@ def serialize_message(message: Message) -> dict:
         "status": message.status,
         "citations": message.citations or [],
         "stage_states": message.stage_states or {},
+        "observations": message.observations or {},
         "created_at": message.created_at,
     }
 
@@ -130,7 +132,7 @@ async def create_message(payload: MessageCreateRequest, user: User = Depends(get
     db.flush()
     stages = {"stt": "skipped", "vision": "skipped", "rag": "running", "llm": "pending", "tts": "skipped"}
     started = time.perf_counter()
-    citations = await knowledge.search(db, text, device_model=device.model if device else None, top_k=5)
+    citations = await knowledge.search(db, text, device_model=device.model if device else None, device_type=equipment_type(device), top_k=5)
     stages["rag"] = "succeeded" if citations else "partial"
     stages["llm"] = "running"
     db.commit()

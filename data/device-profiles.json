@@ -1,0 +1,34 @@
+{
+  "compressor": {
+    "label": "空压机",
+    "components": ["压缩主机", "冷却系统", "润滑系统", "储气罐", "压力表", "安全阀"],
+    "fault_modes": ["压力波动", "排气温度偏高", "润滑不足", "冷却不足", "空气泄漏", "储气罐或安全阀风险"],
+    "ranges": {"temperature_c": {"high": 80, "source": "generic_screening_only"}, "pressure_bar": {"low": 0.5, "source": "generic_screening_only"}},
+    "safety": ["检修前隔离电源并释放残余压力", "不得隔离或堵塞安全阀", "不得对带压容器进行拆卸"],
+    "evidence_prompts": ["拍摄控制面板温度和压力读数", "拍摄储气罐、安全阀和接头近照", "记录报警代码和最近维护时间"]
+  },
+  "hydraulic_system": {
+    "label": "液压系统",
+    "components": ["液压泵", "方向阀", "溢流阀", "蓄能器", "冷却器", "油箱", "管路与接头"],
+    "fault_modes": ["系统压力下降", "油温过高", "内外泄漏", "阀滞后或卡滞", "油液污染", "蓄能器预充压力异常"],
+    "ranges": {"temperature_c": {"high": 65, "source": "generic_screening_only"}},
+    "safety": ["检修前停机、泄压并防止执行机构意外运动", "不得徒手查找高压泄漏", "蓄能器检修必须按制造商规定释放能量"],
+    "evidence_prompts": ["拍摄压力表和油温读数", "拍摄泵、阀、接头及油箱液位", "记录油液型号、过滤器状态和泄漏位置"]
+  },
+  "motor": {
+    "label": "驱动电机",
+    "components": ["电机本体", "轴承", "联轴器", "驱动器", "散热风道", "电缆与接线端子"],
+    "fault_modes": ["电流波动", "过载", "轴承振动", "散热不足", "驱动器报警", "转速或扭矩异常"],
+    "ranges": {"temperature_c": {"high": 90, "source": "generic_screening_only"}},
+    "safety": ["执行电气隔离、验电和挂牌上锁", "不得打开带电控制柜", "旋转部件停稳前不得接近联轴器"],
+    "evidence_prompts": ["拍摄驱动器报警代码和状态灯", "记录三相电流、转速、扭矩和振动趋势", "拍摄电机端子、散热口和轴承附近"]
+  },
+  "industrial_machine": {
+    "label": "通用加工设备",
+    "components": ["主轴", "刀具与刀库", "冷却系统", "进给机构", "控制柜", "防护门与联锁"],
+    "fault_modes": ["刀具磨损", "主轴温升", "过载", "冷却不足", "进给异常", "防护联锁异常"],
+    "ranges": {"temperature_c": {"high": 75, "source": "generic_screening_only"}},
+    "safety": ["停机并确认主轴、刀具和工件完全停止", "防护门和联锁失效时禁止运行", "清理切屑前先隔离能源"],
+    "evidence_prompts": ["拍摄报警代码、主轴负载和温度", "拍摄刀具、冷却液和切削区域", "记录最近换刀、保养和联锁测试结果"]
+  }
+}
