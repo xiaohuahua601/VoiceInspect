@@ -8,7 +8,8 @@ type User = { id: string; username: string; role: string }
 type Device = { id: string; code: string; model: string; name: string; metadata?: Record<string, unknown> }
 type Citation = { citation_id: string; document: string; version: string; page: number | null; section: string; quote_text: string; score: number }
 type StageState = Record<string, string | number>
-type Message = { id: string; role: 'user' | 'assistant'; text: string | null; status: string; citations: Citation[]; stage_states: StageState; observations?: Record<string, unknown>; created_at: string }
+type MessageAttachment = { kind: 'image' | 'audio'; id: string; name: string; preview_url: string }
+type Message = { id: string; role: 'user' | 'assistant'; text: string | null; status: string; citations: Citation[]; stage_states: StageState; observations?: Record<string, unknown>; attachments?: MessageAttachment[]; created_at: string }
 type Session = { id: string; title: string; status: string; device_id: string | null; created_at: string; messages?: Message[] }
 
 const apiBase = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000/api/v1'
@@ -63,6 +64,7 @@ let loadingStageTimer: number | undefined
 let streamingController: AbortController | null = null
 const streamingText = ref('')
 const streamingStageStates = ref<StageState>({ llm: 'running' })
+const localAttachmentUrls = new Set<string>()
 
 const isLoggedIn = computed(() => Boolean(token.value && user.value))
 const activeDevice = computed(() => devices.value.find((device) => device.id === selectedDeviceId.value))
@@ -226,11 +228,13 @@ async function uploadAsset(file: File, kind: 'audio' | 'image') {
       audioAssetId.value = result.id
       audioAssetName.value = result.name || file.name
       audioPreviewUrl.value = URL.createObjectURL(file)
+      localAttachmentUrls.add(audioPreviewUrl.value)
     } else {
       if (imagePreviewUrl.value) URL.revokeObjectURL(imagePreviewUrl.value)
       imageAssetId.value = result.id
       imageAssetName.value = result.name || file.name
       imagePreviewUrl.value = URL.createObjectURL(file)
+      localAttachmentUrls.add(imagePreviewUrl.value)
     }
     // 成功状态由输入框内的附件预览表达，避免在输入框外再插入一行提示。
     uploadState.value = ''
@@ -243,7 +247,10 @@ function clearAudioAttachment() {
   audioAssetId.value = ''
   audioAssetName.value = ''
   uploadState.value = ''
-  if (audioPreviewUrl.value) URL.revokeObjectURL(audioPreviewUrl.value)
+  if (audioPreviewUrl.value) {
+    URL.revokeObjectURL(audioPreviewUrl.value)
+    localAttachmentUrls.delete(audioPreviewUrl.value)
+  }
   audioPreviewUrl.value = ''
 }
 
@@ -251,7 +258,10 @@ function clearImageAttachment() {
   imageAssetId.value = ''
   imageAssetName.value = ''
   uploadState.value = ''
-  if (imagePreviewUrl.value) URL.revokeObjectURL(imagePreviewUrl.value)
+  if (imagePreviewUrl.value) {
+    URL.revokeObjectURL(imagePreviewUrl.value)
+    localAttachmentUrls.delete(imagePreviewUrl.value)
+  }
   imagePreviewUrl.value = ''
 }
 
@@ -260,10 +270,9 @@ function toggleAttachmentMenu() {
   attachmentMenuOpen.value = !attachmentMenuOpen.value
 }
 
-function chooseAttachment(kind: 'audio' | 'image') {
+function chooseAttachment() {
   attachmentMenuOpen.value = false
-  if (kind === 'audio') void toggleRecording()
-  else imageInput.value?.click()
+  imageInput.value?.click()
 }
 
 function closeAttachmentMenuOnOutsidePointer(event: PointerEvent) {
@@ -419,6 +428,17 @@ function stopStreaming() {
   streamingController?.abort()
 }
 
+function detachSubmittedAttachments() {
+  audioAssetId.value = ''
+  audioAssetName.value = ''
+  audioPreviewUrl.value = ''
+  imageAssetId.value = ''
+  imageAssetName.value = ''
+  imagePreviewUrl.value = ''
+  uploadState.value = ''
+  attachmentMenuOpen.value = false
+}
+
 function handleComposerKeydown(event: KeyboardEvent) {
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return
   event.preventDefault()
@@ -428,22 +448,32 @@ function handleComposerKeydown(event: KeyboardEvent) {
 async function sendQuestion() {
   const text = question.value.trim()
   if (!canSend.value || !activeSession.value || isBusy.value) return
+  const submittedAudioAssetId = audioAssetId.value
+  const submittedImageAssetId = imageAssetId.value
+  const submittedAttachments: MessageAttachment[] = []
+  if (submittedImageAssetId && imagePreviewUrl.value) {
+    submittedAttachments.push({ kind: 'image', id: submittedImageAssetId, name: imageAssetName.value || '现场图片', preview_url: imagePreviewUrl.value })
+  }
+  if (submittedAudioAssetId && audioPreviewUrl.value) {
+    submittedAttachments.push({ kind: 'audio', id: submittedAudioAssetId, name: audioAssetName.value || '现场语音', preview_url: audioPreviewUrl.value })
+  }
   isBusy.value = true
   startLoadingProgress()
   streamingText.value = ''
   streamingStageStates.value = { llm: 'running' }
   errorMessage.value = ''
   notice.value = ''
-  const optimistic: Message = { id: `local-${Date.now()}`, role: 'user', text: text || '已上传现场图片，请分析设备状态。', status: 'completed', citations: [], stage_states: { input: 'succeeded' }, created_at: new Date().toISOString() }
+  const optimistic: Message = { id: `local-${Date.now()}`, role: 'user', text: text || (submittedImageAssetId ? '已上传现场图片，请分析设备状态。' : '已上传现场语音，请转写并分析设备状态。'), status: 'completed', citations: [], stage_states: { input: 'succeeded' }, attachments: submittedAttachments, created_at: new Date().toISOString() }
   activeSession.value.messages = [...(activeSession.value.messages ?? []), optimistic]
   question.value = ''
+  detachSubmittedAttachments()
   let completed = false
   try {
     await streamDiagnosis({
       session_id: activeSession.value.id,
       text,
-      audio_asset_id: audioAssetId.value || null,
-      image_asset_id: imageAssetId.value || null,
+      audio_asset_id: submittedAudioAssetId || null,
+      image_asset_id: submittedImageAssetId || null,
     }, (event) => {
       if (event.type === 'start') {
         streamingStageStates.value = event.stage_states ?? { llm: 'running' }
@@ -458,8 +488,6 @@ async function sendQuestion() {
     })
     if (!completed) throw new Error('回答流未正常结束，请重试')
     notice.value = '诊断回答已保存，可展开查看资料依据'
-    clearAudioAttachment()
-    clearImageAttachment()
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       question.value = text
@@ -480,8 +508,8 @@ onBeforeUnmount(() => {
   streamingController?.abort()
   stopLoadingProgress()
   document.removeEventListener('pointerdown', closeAttachmentMenuOnOutsidePointer)
-  if (audioPreviewUrl.value) URL.revokeObjectURL(audioPreviewUrl.value)
-  if (imagePreviewUrl.value) URL.revokeObjectURL(imagePreviewUrl.value)
+  localAttachmentUrls.forEach((url) => URL.revokeObjectURL(url))
+  localAttachmentUrls.clear()
 })
 
 function stageLabel(stage: string) { return ({ stt: '语音转写', vision: '图片观察', rag: '资料检索', llm: '回答生成', tts: '语音播报' } as Record<string, string>)[stage] ?? stage }
@@ -506,8 +534,8 @@ onMounted(async () => {
     <section v-else class="workspace">
       <aside class="sidebar" aria-label="工作区导航"><div class="brand"><span class="pulse-dot" aria-hidden="true"></span><span>VOICE<br />INSPECT</span></div><div class="sidebar-section"><p class="eyebrow">现场工作台</p><button class="nav-item active" type="button" disabled aria-current="page"><span>⌁</span> 诊断会话</button></div><div class="sidebar-section session-section"><div class="section-heading"><p class="eyebrow">最近会话</p><button class="icon-button" type="button" aria-label="创建新会话" @click="createSession">＋</button></div><div class="session-list" role="list"><button v-for="session in sessions" :key="session.id" class="session-item" :class="{ selected: activeSession?.id === session.id }" type="button" @click="selectSession(session.id)"><span class="session-mark">{{ session.title.slice(0, 1) }}</span><span><strong>{{ session.title }}</strong><small>{{ new Date(session.created_at).toLocaleDateString('zh-CN') }}</small></span></button></div></div></aside>
       <section class="main-panel"><header class="topbar"><div><p class="eyebrow">DIAGNOSIS SESSION</p><h2>{{ activeSession?.title ?? '诊断会话' }}</h2></div><div class="topbar-actions"><div class="health-chip" :class="health?.status === 'ok' ? 'is-ok' : 'is-degraded'"><span class="status-dot"></span><span>{{ health?.status === 'ok' ? '本地服务正常' : '服务需检查' }}</span></div><button class="button secondary" type="button" @click="loadWorkspace">刷新状态</button></div></header><div class="context-strip"><div><span class="strip-label">当前设备</span><select v-model="selectedDeviceId" aria-label="选择当前设备" @change="changeDevice"><option value="">未选择设备</option><option v-for="device in devices" :key="device.id" :value="device.id">{{ device.name }} · {{ device.model }}</option></select><div class="context-actions"><button class="button secondary" type="button" :disabled="!selectedDeviceId" @click="showHistory">设备历史</button><button class="button secondary" type="button" @click="showAudit">审计记录</button></div></div><div class="strip-note"><span class="status-dot is-ok"></span><span>当前：{{ activeDevice?.name || '未选择设备' }} · 示例问题已适配</span></div></div>
-        <input ref="imageInput" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" @change="chooseImage" /><div class="timeline" aria-live="polite"><div v-if="!activeSession?.messages?.length" class="empty-state"><div class="empty-orbit"><span></span><span></span><span></span></div><p class="eyebrow">READY FOR {{ deviceTypeLabel.toUpperCase() }}</p><h3>{{ emptyStateTitle }}</h3><p>{{ emptyStateDescription }}</p><div class="quick-prompts" aria-label="当前设备示例问题"><button v-for="prompt in quickPrompts" :key="prompt" type="button" @click="question = prompt">{{ prompt }}</button></div></div><template v-for="message in activeSession?.messages" :key="message.id"><article v-if="message.role === 'user'" class="message user-message"><div class="message-meta"><span class="mini-avatar">{{ user?.username.slice(0, 1).toUpperCase() }}</span><span>你 · {{ new Date(message.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}</span></div><p>{{ message.text }}</p></article><article v-else class="answer-block"><div class="answer-head"><div><p class="eyebrow signal-label">ASSISTED FINDING</p><h3>诊断建议</h3></div><span class="verified-stamp">● {{ message.status === 'completed' ? '已保存' : '部分完成' }}</span></div><div class="answer-text answer-markdown" v-html="renderMarkdown(message.text)"></div><DiagnosticEvidence :evidence="message.observations" /><div class="stage-row"><span v-for="item in stageEntries(message.stage_states)" :key="item[0]" class="stage-chip" :class="`tone-${statusTone(item[1])}`"><span class="chip-dot"></span>{{ stageLabel(item[0]) }} · {{ statusLabel(item[1]) }}</span><span v-if="message.stage_states.completed_ms" class="latency">{{ message.stage_states.completed_ms }} ms</span></div><div v-if="message.citations?.length" class="evidence-section"><div class="evidence-heading"><span class="evidence-icon">⌁</span><div><p class="eyebrow">资料依据</p><strong>{{ message.citations.length }} 条相关片段</strong></div></div><button v-for="citation in message.citations" :key="citation.citation_id" class="citation-row" type="button" @click="citationsOpen = citationsOpen === citation.citation_id ? null : citation.citation_id"><span class="citation-index">{{ message.citations.indexOf(citation) + 1 }}</span><span><strong>{{ citation.document }}</strong><small>{{ citation.section }} · 相关度 {{ citation.score }}</small></span><span class="citation-arrow">{{ citationsOpen === citation.citation_id ? '−' : '+' }}</span><p v-if="citationsOpen === citation.citation_id" class="citation-quote">{{ citation.quote_text }}</p></button></div><div v-else class="degraded-note"><span>!</span><span>当前没有检索到可绑定的手册依据，请补充设备型号或联系知识库管理员。</span></div><div v-if="message.text && selectedDeviceId" class="answer-actions"><button class="button secondary" type="button" :disabled="capabilities.tts?.available === false" @click="playAnswer(message)">{{ speakingId === message.id ? '停止播报' : '播报建议' }}</button><button class="button secondary" type="button" @click="createFaultDraft(message)">确认创建故障记录</button></div></article></template><article v-if="isBusy && streamingText" class="answer-block streaming-answer" role="status" aria-live="polite" aria-label="正在流式生成诊断回复"><div class="answer-head"><div><p class="eyebrow signal-label">ASSISTED FINDING · GENERATING</p><h3>诊断建议</h3></div><span class="streaming-label"><span class="streaming-pulse" aria-hidden="true"></span>实时生成</span></div><div class="answer-text answer-markdown" v-html="renderMarkdown(streamingText)"></div><div class="streaming-cursor" aria-hidden="true"></div><div class="stage-row"><span v-for="item in stageEntries(streamingStageStates)" :key="item[0]" class="stage-chip" :class="`tone-${statusTone(item[1])}`"><span class="chip-dot"></span>{{ stageLabel(item[0]) }} · {{ statusLabel(item[1]) }}</span></div></article><article v-if="isBusy && !streamingText" class="model-progress" role="status" aria-live="polite" aria-label="正在生成诊断回复"><div class="model-progress-head"><span class="model-progress-orbit" aria-hidden="true"><span></span></span><div class="model-progress-copy"><strong>正在生成诊断回复</strong><small>{{ loadingStage }}</small></div></div><div class="model-progress-track" aria-hidden="true"><span></span></div><div class="model-progress-device">当前设备：{{ activeDevice?.name || "未选择设备" }} · 正在基于本次会话证据处理</div></article><p v-if="errorMessage" class="inline-error workspace-error" role="alert">{{ errorMessage }}</p><p v-if="notice" class="inline-notice" role="status">{{ notice }}</p></div>
-        <form class="composer" novalidate @submit.prevent="sendQuestion"><div class="composer-entry"><textarea class="resize-none" v-model="question" rows="2" :disabled="isBusy" :placeholder="`描述${activeDevice?.name || '当前设备'}现象… 也可以只发送图片，Enter 发送，Shift + Enter 换行`" aria-label="诊断问题" @keydown="handleComposerKeydown"></textarea><button v-if="!isBusy" class="button primary composer-submit" type="submit" :disabled="!canSend" :aria-label="imageAssetId && !question.trim() ? '发送图片并开始诊断' : '开始诊断'">{{ imageAssetId && !question.trim() ? '发送图片' : '开始诊断' }} <span aria-hidden="true">→</span></button><button v-else class="button secondary composer-submit" type="button" aria-label="停止生成诊断回答" @click="stopStreaming">停止生成 <span aria-hidden="true">×</span></button></div><div v-if="uploadState" class="upload-state" role="status">{{ uploadState }}</div><div class="composer-actions"><div ref="attachmentMenu" class="composer-tools attachment-picker"><button type="button" class="input-tool-button attachment-trigger" :class="{ recording }" :disabled="isBusy || (capabilities.stt?.available === false && capabilities.vision?.available === false)" :aria-expanded="attachmentMenuOpen" aria-haspopup="menu" :title="recording ? '录音进行中' : '选择语音或图片输入'" @click.stop="toggleAttachmentMenu"><span class="tool-icon" aria-hidden="true">{{ recording ? '●' : '＋' }}</span><span>{{ recording ? '录音进行中' : '添加附件' }}</span></button><div v-if="attachmentMenuOpen" class="attachment-menu" role="menu" aria-label="选择附件类型"><button type="button" class="attachment-menu-item" role="menuitem" :disabled="capabilities.stt?.available === false" @click.stop="chooseAttachment('audio')"><span aria-hidden="true">◉</span><span><strong>{{ recording ? '停止录音' : '录制语音' }}</strong><small>{{ capabilities.stt?.available === false ? '本地 STT 未安装' : '使用麦克风录制现场描述' }}</small></span></button><button type="button" class="attachment-menu-item" role="menuitem" :disabled="capabilities.vision?.available === false" @click.stop="chooseAttachment('image')"><span aria-hidden="true">▧</span><span><strong>添加图片</strong><small>{{ capabilities.vision?.available === false ? '本地 VLM 未配置' : '上传现场图片作为证据' }}</small></span></button></div></div><div v-if="imageAssetId && imagePreviewUrl" class="attachment-preview attachment-image-preview"><img :src="imagePreviewUrl" :alt="imageAssetName || '现场图片'" /><span class="attachment-preview-copy"><strong>现场图片</strong><small>{{ imageAssetName || '已上传图片' }}</small></span><button class="attachment-remove" type="button" aria-label="移除现场图片" @click="clearImageAttachment">×</button></div><div v-if="audioAssetId && audioPreviewUrl" class="attachment-preview attachment-audio-preview"><span class="attachment-preview-icon" aria-hidden="true">◉</span><span class="attachment-preview-copy"><strong>现场语音</strong><small>{{ audioAssetName || '已录音' }}</small></span><audio :src="audioPreviewUrl" controls preload="metadata" aria-label="预览现场语音"></audio><button class="attachment-remove" type="button" aria-label="移除现场语音" @click="clearAudioAttachment">×</button></div></div></form><div v-if="faultDialogOpen" class="dialog-backdrop" role="presentation"><section class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="fault-title"><p class="eyebrow">CONTROLLED WRITE</p><h3 id="fault-title">确认创建故障记录？</h3><p>这会写入设备历史并记录审计信息。重复确认不会重复创建。</p><div class="dialog-actions"><button class="button secondary" type="button" @click="faultDialogOpen = false">取消</button><button class="button primary" type="button" @click="confirmFault">确认写入</button></div></section></div><div v-if="historyOpen || auditOpen" class="dialog-backdrop" role="presentation"><section class="confirm-dialog records-dialog" role="dialog" aria-modal="true" :aria-labelledby="historyOpen ? 'history-title' : 'audit-title'"><p class="eyebrow">{{ historyOpen ? 'DEVICE HISTORY' : 'AUDIT TRAIL' }}</p><h3 :id="historyOpen ? 'history-title' : 'audit-title'">{{ historyOpen ? '设备故障历史' : '审计记录' }}</h3><div v-if="historyOpen && !historyRecords.length" class="degraded-note"><span>!</span><span>当前设备暂无故障记录。</span></div><div v-if="historyOpen" class="record-list"><article v-for="record in historyRecords" :key="record.id" class="record-row"><strong>{{ record.symptom }}</strong><small>{{ record.severity }} · {{ record.status }} · {{ new Date(record.created_at).toLocaleString('zh-CN') }}</small></article></div><div v-if="auditOpen && !auditEvents.length" class="degraded-note"><span>!</span><span>当前账号暂无审计事件。</span></div><div v-if="auditOpen" class="record-list"><article v-for="event in auditEvents" :key="event.id" class="record-row"><strong>{{ event.action }}</strong><small>{{ event.target }} · {{ new Date(event.created_at).toLocaleString('zh-CN') }}</small></article></div><div class="dialog-actions"><button class="button primary" type="button" @click="historyOpen = false; auditOpen = false">关闭</button></div></section></div>
+        <input ref="imageInput" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" @change="chooseImage" /><div class="timeline" aria-live="polite"><div v-if="!activeSession?.messages?.length" class="empty-state"><div class="empty-orbit"><span></span><span></span><span></span></div><p class="eyebrow">READY FOR {{ deviceTypeLabel.toUpperCase() }}</p><h3>{{ emptyStateTitle }}</h3><p>{{ emptyStateDescription }}</p><div class="quick-prompts" aria-label="当前设备示例问题"><button v-for="prompt in quickPrompts" :key="prompt" type="button" @click="question = prompt">{{ prompt }}</button></div></div><template v-for="message in activeSession?.messages" :key="message.id"><article v-if="message.role === 'user'" class="message user-message"><div class="message-meta"><span class="mini-avatar">{{ user?.username.slice(0, 1).toUpperCase() }}</span><span>你 · {{ new Date(message.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}</span></div><div v-if="message.attachments?.length" class="message-attachments"><template v-for="attachment in message.attachments" :key="attachment.id"><figure v-if="attachment.kind === 'image'" class="message-attachment message-image-attachment"><img :src="attachment.preview_url" :alt="attachment.name" /><figcaption>{{ attachment.name }}</figcaption></figure><div v-else-if="attachment.kind === 'audio'" class="message-attachment message-audio-attachment"><span class="message-attachment-icon" aria-hidden="true">◉</span><div><strong>现场语音</strong><small>{{ attachment.name }}</small></div><audio :src="attachment.preview_url" controls preload="metadata" :aria-label="attachment.name"></audio></div></template></div><p v-if="message.text">{{ message.text }}</p></article><article v-else class="answer-block"><div class="answer-head"><div><p class="eyebrow signal-label">ASSISTED FINDING</p><h3>诊断建议</h3></div><span class="verified-stamp">● {{ message.status === 'completed' ? '已保存' : '部分完成' }}</span></div><div class="answer-text answer-markdown" v-html="renderMarkdown(message.text)"></div><DiagnosticEvidence :evidence="message.observations" /><div class="stage-row"><span v-for="item in stageEntries(message.stage_states)" :key="item[0]" class="stage-chip" :class="`tone-${statusTone(item[1])}`"><span class="chip-dot"></span>{{ stageLabel(item[0]) }} · {{ statusLabel(item[1]) }}</span><span v-if="message.stage_states.completed_ms" class="latency">{{ message.stage_states.completed_ms }} ms</span></div><div v-if="message.citations?.length" class="evidence-section"><div class="evidence-heading"><span class="evidence-icon">⌁</span><div><p class="eyebrow">资料依据</p><strong>{{ message.citations.length }} 条相关片段</strong></div></div><button v-for="citation in message.citations" :key="citation.citation_id" class="citation-row" type="button" @click="citationsOpen = citationsOpen === citation.citation_id ? null : citation.citation_id"><span class="citation-index">{{ message.citations.indexOf(citation) + 1 }}</span><span><strong>{{ citation.document }}</strong><small>{{ citation.section }} · 相关度 {{ citation.score }}</small></span><span class="citation-arrow">{{ citationsOpen === citation.citation_id ? '−' : '+' }}</span><p v-if="citationsOpen === citation.citation_id" class="citation-quote">{{ citation.quote_text }}</p></button></div><div v-else class="degraded-note"><span>!</span><span>当前没有检索到可绑定的手册依据，请补充设备型号或联系知识库管理员。</span></div><div v-if="message.text && selectedDeviceId" class="answer-actions"><button class="button secondary" type="button" :disabled="capabilities.tts?.available === false" @click="playAnswer(message)">{{ speakingId === message.id ? '停止播报' : '播报建议' }}</button><button class="button secondary" type="button" @click="createFaultDraft(message)">确认创建故障记录</button></div></article></template><article v-if="isBusy && streamingText" class="answer-block streaming-answer" role="status" aria-live="polite" aria-label="正在流式生成诊断回复"><div class="answer-head"><div><p class="eyebrow signal-label">ASSISTED FINDING · GENERATING</p><h3>诊断建议</h3></div><span class="streaming-label"><span class="streaming-pulse" aria-hidden="true"></span>实时生成</span></div><div class="answer-text answer-markdown" v-html="renderMarkdown(streamingText)"></div><div class="streaming-cursor" aria-hidden="true"></div><div class="stage-row"><span v-for="item in stageEntries(streamingStageStates)" :key="item[0]" class="stage-chip" :class="`tone-${statusTone(item[1])}`"><span class="chip-dot"></span>{{ stageLabel(item[0]) }} · {{ statusLabel(item[1]) }}</span></div></article><article v-if="isBusy && !streamingText" class="model-progress" role="status" aria-live="polite" aria-label="正在生成诊断回复"><div class="model-progress-head"><span class="model-progress-orbit" aria-hidden="true"><span></span></span><div class="model-progress-copy"><strong>正在生成诊断回复</strong><small>{{ loadingStage }}</small></div></div><div class="model-progress-track" aria-hidden="true"><span></span></div><div class="model-progress-device">当前设备：{{ activeDevice?.name || "未选择设备" }} · 正在基于本次会话证据处理</div></article><p v-if="errorMessage" class="inline-error workspace-error" role="alert">{{ errorMessage }}</p><p v-if="notice" class="inline-notice" role="status">{{ notice }}</p></div>
+        <form class="composer" novalidate @submit.prevent="sendQuestion"><div class="composer-entry"><div v-if="imageAssetId || audioAssetId" class="attachment-preview-strip"><div v-if="imageAssetId && imagePreviewUrl" class="attachment-preview attachment-image-preview"><img :src="imagePreviewUrl" :alt="imageAssetName || '现场图片'" /><span class="attachment-preview-copy"><strong>现场图片</strong><small>{{ imageAssetName || '已上传图片' }}</small></span><button class="attachment-remove" type="button" aria-label="移除现场图片" @click="clearImageAttachment">×</button></div><div v-if="audioAssetId && audioPreviewUrl" class="attachment-preview attachment-audio-preview"><span class="attachment-preview-icon" aria-hidden="true">◉</span><span class="attachment-preview-copy"><strong>现场语音</strong><small>{{ audioAssetName || '已录音' }}</small></span><audio :src="audioPreviewUrl" controls preload="metadata" aria-label="预览现场语音"></audio><button class="attachment-remove" type="button" aria-label="移除现场语音" @click="clearAudioAttachment">×</button></div></div><textarea class="resize-none" v-model="question" rows="2" :disabled="isBusy" :placeholder="`描述${activeDevice?.name || '当前设备'}现象… 也可以只发送图片，Enter 发送，Shift + Enter 换行`" aria-label="诊断问题" @keydown="handleComposerKeydown"></textarea><div class="composer-toolbar"><div ref="attachmentMenu" class="composer-tools attachment-picker"><button type="button" class="input-tool-button attachment-trigger" :disabled="isBusy || capabilities.vision?.available === false" :aria-expanded="attachmentMenuOpen" aria-haspopup="menu" :title="capabilities.vision?.available === false ? '本地 VLM 未配置' : '添加现场图片'" @click.stop="toggleAttachmentMenu"><span class="tool-icon" aria-hidden="true">＋</span><span>添加附件</span></button><div v-if="attachmentMenuOpen" class="attachment-menu" role="menu" aria-label="选择附件类型"><button type="button" class="attachment-menu-item" role="menuitem" :disabled="capabilities.vision?.available === false" @click.stop="chooseAttachment"><span aria-hidden="true">▧</span><span><strong>添加图片</strong><small>{{ capabilities.vision?.available === false ? '本地 VLM 未配置' : '上传现场图片作为证据' }}</small></span></button></div></div><div class="composer-controls"><button type="button" class="composer-mic-button" :class="{ recording }" :disabled="isBusy || capabilities.stt?.available === false" :aria-label="recording ? '停止录音' : '录制现场语音'" :title="capabilities.stt?.available === false ? '本地 STT 未安装' : (recording ? '停止录音' : '录制现场语音')" @click="toggleRecording"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8"></path></svg><small v-if="recording">{{ recordSeconds }}s</small></button><button v-if="!isBusy" class="button primary composer-submit" type="submit" :disabled="!canSend" :aria-label="imageAssetId && !question.trim() ? '发送图片并开始诊断' : '开始诊断'" :title="imageAssetId && !question.trim() ? '发送图片并开始诊断' : '开始诊断'"><span aria-hidden="true">↑</span></button><button v-else class="button secondary composer-submit" type="button" aria-label="停止生成诊断回答" title="停止生成诊断回答" @click="stopStreaming"><span aria-hidden="true">×</span></button></div></div></div><div v-if="uploadState" class="upload-state" role="status">{{ uploadState }}</div></form><div v-if="faultDialogOpen" class="dialog-backdrop" role="presentation"><section class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="fault-title"><p class="eyebrow">CONTROLLED WRITE</p><h3 id="fault-title">确认创建故障记录？</h3><p>这会写入设备历史并记录审计信息。重复确认不会重复创建。</p><div class="dialog-actions"><button class="button secondary" type="button" @click="faultDialogOpen = false">取消</button><button class="button primary" type="button" @click="confirmFault">确认写入</button></div></section></div><div v-if="historyOpen || auditOpen" class="dialog-backdrop" role="presentation"><section class="confirm-dialog records-dialog" role="dialog" aria-modal="true" :aria-labelledby="historyOpen ? 'history-title' : 'audit-title'"><p class="eyebrow">{{ historyOpen ? 'DEVICE HISTORY' : 'AUDIT TRAIL' }}</p><h3 :id="historyOpen ? 'history-title' : 'audit-title'">{{ historyOpen ? '设备故障历史' : '审计记录' }}</h3><div v-if="historyOpen && !historyRecords.length" class="degraded-note"><span>!</span><span>当前设备暂无故障记录。</span></div><div v-if="historyOpen" class="record-list"><article v-for="record in historyRecords" :key="record.id" class="record-row"><strong>{{ record.symptom }}</strong><small>{{ record.severity }} · {{ record.status }} · {{ new Date(record.created_at).toLocaleString('zh-CN') }}</small></article></div><div v-if="auditOpen && !auditEvents.length" class="degraded-note"><span>!</span><span>当前账号暂无审计事件。</span></div><div v-if="auditOpen" class="record-list"><article v-for="event in auditEvents" :key="event.id" class="record-row"><strong>{{ event.action }}</strong><small>{{ event.target }} · {{ new Date(event.created_at).toLocaleString('zh-CN') }}</small></article></div><div class="dialog-actions"><button class="button primary" type="button" @click="historyOpen = false; auditOpen = false">关闭</button></div></section></div>
       </section>
     </section>
   </main>
