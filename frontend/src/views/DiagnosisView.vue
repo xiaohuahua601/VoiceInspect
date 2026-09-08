@@ -338,9 +338,20 @@ async function streamDiagnosis(payload: Record<string, unknown>, onEvent: (event
       buffer = ''
     }
     for (const frame of frames) {
-      const data = frame.split(/\r?\n/).find((line) => line.startsWith('data:'))?.slice(5).trim()
-      if (!data || data === '[DONE]') continue
-      onEvent(JSON.parse(data) as Record<string, any>)
+      const data = frame.split(/\r?\n/).find((line) => line.startsWith('data:'))?.slice(5) ?? ''
+      const normalized = data.trim()
+      if (!normalized) continue
+      if (normalized === '[DONE]' || normalized.startsWith('[DONE]')) {
+        continue
+      }
+      try {
+        onEvent(JSON.parse(normalized) as Record<string, any>)
+      } catch (error) {
+        if (normalized.includes('[DONE]')) {
+          continue
+        }
+        throw error
+      }
     }
   }
   while (true) {
