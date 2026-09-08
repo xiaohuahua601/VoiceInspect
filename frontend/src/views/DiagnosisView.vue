@@ -230,7 +230,8 @@ async function uploadAsset(file: File, kind: 'audio' | 'image') {
       imageAssetName.value = result.name || file.name
       imagePreviewUrl.value = URL.createObjectURL(file)
     }
-    uploadState.value = kind === 'audio' ? '语音已就绪，可编辑补充文字' : '图片已就绪，可开始诊断'
+    // 成功状态由输入框内的附件预览表达，避免在输入框外再插入一行提示。
+    uploadState.value = ''
   } catch (error) {
     uploadState.value = error instanceof Error ? error.message : '附件上传失败'
   }
