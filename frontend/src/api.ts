@@ -56,3 +56,23 @@ export async function requestPage<T>(path: string, params: Record<string, string
   return data
 }
 export function fileUrl(path: string) { return `${apiBase}${path}` }
+
+export async function downloadFile(path: string): Promise<Blob> {
+  const headers = new Headers()
+  const token = getToken()
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  const response = await fetch(fileUrl(path), { headers })
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    const error = data?.error
+    const err = new Error(error?.message ?? '文件下载失败') as Error & { code?: string; status?: number }
+    err.code = error?.code
+    err.status = response.status
+    if (response.status === 401 && typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+      clearAuth()
+      window.location.assign(`/login?expired=1&redirect=${encodeURIComponent(window.location.pathname + window.location.search)}`)
+    }
+    throw err
+  }
+  return response.blob()
+}
