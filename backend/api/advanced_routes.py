@@ -50,6 +50,9 @@ class MultimodalMessage(BaseModel):
     audio_asset_id: str | None = None
     image_asset_id: str | None = None
 
+IMAGE_ONLY_PROMPT = "请根据图片观察结果，分析当前设备状态并给出安全检查建议。"
+IMAGE_ONLY_MESSAGE = "已上传现场图片，请分析设备状态。"
+
 
 class ToolDraftRequest(BaseModel):
     session_id: str
@@ -149,9 +152,14 @@ async def create_multimodal_message(payload: MultimodalMessage, user: User = Dep
         except Exception as exc:
             stage_states["vision"] = "failed"
             _task_done(task, "failed", {"message": str(exc)}, "VLM_UNAVAILABLE")
+    message_text = text
     if not text:
-        raise AppError("MESSAGE_EMPTY", "请输入文字或提供可用的语音输入", 422, False, "message")
-    user_message = Message(session_id=session.id, role="user", text=text, status="completed", transcript=transcript, observations=observations, stage_states=stage_states)
+        if payload.image_asset_id:
+            text = IMAGE_ONLY_PROMPT
+            message_text = IMAGE_ONLY_MESSAGE
+        else:
+            raise AppError("MESSAGE_EMPTY", "请输入文字或提供可用的语音输入，或附加现场图片", 422, False, "message")
+    user_message = Message(session_id=session.id, role="user", text=message_text, status="completed", transcript=transcript, observations=observations, stage_states=stage_states)
     db.add(user_message)
     db.flush()
     _event(db, session.id, "message.input", {"message_id": user_message.id, "stages": stage_states})
@@ -232,9 +240,14 @@ async def stream_multimodal_message(payload: MultimodalMessage, user: User = Dep
                 except Exception as exc:
                     stage_states["vision"] = "failed"
                     _task_done(task, "failed", {"message": str(exc)}, "VLM_UNAVAILABLE")
+            message_text = text
             if not text:
-                raise AppError("MESSAGE_EMPTY", "请输入文字或提供可用的语音输入", 422, False, "message")
-            user_message = Message(session_id=session.id, role="user", text=text, status="completed", transcript=transcript, observations=observations, stage_states=stage_states)
+                if payload.image_asset_id:
+                    text = IMAGE_ONLY_PROMPT
+                    message_text = IMAGE_ONLY_MESSAGE
+                else:
+                    raise AppError("MESSAGE_EMPTY", "请输入文字或提供可用的语音输入，或附加现场图片", 422, False, "message")
+            user_message = Message(session_id=session.id, role="user", text=message_text, status="completed", transcript=transcript, observations=observations, stage_states=stage_states)
             db.add(user_message)
             db.flush()
             _event(db, session.id, "message.input", {"message_id": user_message.id, "stages": stage_states})
