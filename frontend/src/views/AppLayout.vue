@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { clearAuth, getStoredUser, request, roleLabel } from '../api'
 
@@ -8,6 +8,7 @@ const route = useRoute()
 const user = computed(() => getStoredUser())
 const notifications = ref<any[]>([])
 const notificationsOpen = ref(false)
+const notificationMenu = ref<HTMLElement | null>(null)
 const notificationBusy = ref(false)
 const notificationError = ref('')
 const notificationNotice = ref('')
@@ -57,6 +58,18 @@ async function markAllNotificationsRead() {
     notificationBusy.value = false
   }
 }
+function closeNotificationsOnOutsidePointer(event: PointerEvent) {
+  if (!notificationsOpen.value) return
+  const target = event.target
+  if (target instanceof Node && !notificationMenu.value?.contains(target)) {
+    notificationsOpen.value = false
+  }
+}
+function closeNotificationsOnEscape(event: KeyboardEvent) {
+  if (event.key === 'Escape' && notificationsOpen.value) {
+    notificationsOpen.value = false
+  }
+}
 
 const nav = [
   { path: '/dashboard', label: '运营总览', icon: '⌂' },
@@ -78,7 +91,15 @@ async function logout() {
   clearAuth(); router.replace('/login')
 }
 watch(notificationsOpen, open => { if (open) loadNotifications() })
-onMounted(loadNotifications)
+onMounted(() => {
+  loadNotifications()
+  document.addEventListener('pointerdown', closeNotificationsOnOutsidePointer)
+  document.addEventListener('keydown', closeNotificationsOnEscape)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', closeNotificationsOnOutsidePointer)
+  document.removeEventListener('keydown', closeNotificationsOnEscape)
+})
 </script>
 
 <template>
@@ -100,7 +121,7 @@ onMounted(loadNotifications)
       <header class="admin-topbar">
         <div><span class="eyebrow">VOICEINSPECT / OPERATIONS</span><h1>工业设备智能诊断后台</h1></div>
         <div class="topbar-actions">
-          <div class="notification-menu">
+          <div ref="notificationMenu" class="notification-menu">
             <button class="notification-button" type="button" :aria-label="`通知，${unreadCount} 条未读`" :aria-expanded="notificationsOpen" aria-haspopup="dialog" @click="notificationsOpen = !notificationsOpen">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>
               <b v-if="unreadCount" aria-hidden="true">{{ unreadCount > 99 ? '99+' : unreadCount }}</b>
