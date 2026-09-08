@@ -78,3 +78,27 @@ def test_operator_is_read_only_and_supervisor_can_assign_and_reassign():
     blocked = supervisor.post(f"/api/v1/fault-records/{fault_id}/assign", json={"assigned_to": operator.get("/api/v1/auth/me").json()["id"]})
     assert blocked.status_code == 409
     assert blocked.json()["error"]["code"] == "FAULT_STATUS_TRANSITION_INVALID"
+
+
+def test_operator_can_mark_only_own_notifications_as_read():
+    operator = login("operator", "change-me")
+    supervisor = login("supervisor", "change-me-supervisor")
+    fault_id = create_fault(operator)
+    assert supervisor.post(f"/api/v1/fault-records/{fault_id}/confirm", json={"note": "通知测试"}).status_code == 200
+    operator_id = operator.get("/api/v1/auth/me").json()["id"]
+    assigned = supervisor.post(
+        f"/api/v1/fault-records/{fault_id}/assign",
+        json={"assigned_to": operator_id, "idempotency_key": str(uuid4())},
+    )
+    assert assigned.status_code == 200, assigned.text
+
+    unread_before = [item for item in operator.get("/api/v1/notifications").json() if not item["read"]]
+    assert any(item["target_id"] == fault_id for item in unread_before)
+    marked = operator.post("/api/v1/notifications/read-all")
+    assert marked.status_code == 200, marked.text
+    assert marked.json()["updated"] >= 1
+    assert all(item["read"] for item in operator.get("/api/v1/notifications").json())
+
+    repeated = operator.post("/api/v1/notifications/read-all")
+    assert repeated.status_code == 200
+    assert repeated.json()["updated"] == 0

@@ -480,6 +480,18 @@ def notification_list(page: int | None = None, page_size: int = 20, user: User =
     return items
 
 
+@router.post("/notifications/read-all")
+def notification_read_all(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """Mark only the current user's notifications as read."""
+    now = utc_now()
+    updated = db.query(Notification).filter(
+        Notification.recipient_id == user.id,
+        Notification.read_at.is_(None),
+    ).update({"read_at": now}, synchronize_session=False)
+    db.commit()
+    return {"updated": int(updated), "read": True}
+
+
 @router.post("/notifications/{notification_id}/read")
 def notification_read(notification_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     item = db.get(Notification, notification_id)
