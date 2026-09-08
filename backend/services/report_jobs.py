@@ -183,7 +183,10 @@ class _PdfReport:
         self.y = 42
 
     def ensure(self, height: float) -> None:
-        if self.y + height > self.height - 48:
+        # Keep a real safety margin for the footer.  The previous 48pt
+        # threshold still allowed a detail card's second row to reach the
+        # footer text and produce overlapping glyphs in the exported PDF.
+        if self.y + height > self.height - 72:
             self.new_page()
 
     def text(self, value: object, size: float = 9, color=None, x: float | None = None, y: float | None = None) -> None:
@@ -298,6 +301,10 @@ def _pdf_bytes(rows: list[dict], report_id: str) -> bytes:
     for index, row in enumerate(rows, 1):
         report.heading(f"三、故障详情 {index:02d}", 1)
         report.paragraph(f"{_clean(row['symptom'])}", size=11, color=report.navy, width=52, gap=2)
+        # The metadata card is atomic: start it on a fresh page when the
+        # complete two-row card would approach the footer.  Without this
+        # guard, the second row can be painted over the footer on long lists.
+        report.ensure(94)
         report.page.draw_rect(report.fitz.Rect(report.left, report.y, report.right, report.y + 66), color=report.line_color, fill=(0.98, 0.98, 0.97), width=0.6)
         label_y = report.y + 17
         report.label_value("设备", f"{_clean(row['device_name'])}（{_clean(row['device_code'])}）", 54, label_y, 205)
