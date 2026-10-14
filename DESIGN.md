@@ -49,6 +49,11 @@ VoiceInspect is an operational product for industrial equipment operators workin
 
 The product register is utilitarian rather than promotional. The memorable signature is the evidence timeline: every answer is accompanied by visible capability stages, elapsed time, and source quality.
 
+## Brand mark
+
+The shared VoiceInspect mark combines an inspection target, a voice waveform, and an industrial gear silhouette. The generated mark is used as a transparent raster asset at public/brand/voiceinspect-mark.png; on dark navigation rails it receives a small pale recognition plate so the navy gear remains legible against the ink surface. The exact VOICE / INSPECT wordmark is rendered as real interface text so it remains legible, localizable, and free of generated-text spelling drift. Existing ink and signal tokens remain the source of truth for the visual palette.
+
+
 ## Colors
 
 Warm paper and ink create a readable work surface. Teal is reserved for verified progress and primary actions. Amber signals review or incomplete evidence. Red is reserved for safety and destructive outcomes. Never use color alone to communicate state.

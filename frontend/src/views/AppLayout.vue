@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { clearAuth, getStoredUser, request, roleLabel } from '../api'
+import BrandLogo from '../components/BrandLogo.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -105,7 +106,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="admin-shell" :class="{ 'is-diagnosis': route.path === '/diagnosis' }">
     <aside class="admin-sidebar">
-      <div class="admin-brand"><span class="pulse-dot"></span><span>VOICE<br>INSPECT</span></div>
+      <RouterLink class="admin-brand" to="/dashboard" aria-label="VoiceInspect 运营总览"><BrandLogo /></RouterLink>
       <div class="scope-card"><span class="eyebrow">CURRENT SCOPE</span><strong>{{ user?.organization_id ? '演示制造集团' : '默认组织' }}</strong><small>组织级数据范围</small></div>
       <nav class="admin-nav" aria-label="后台导航">
         <span class="nav-group-label">工作台</span>

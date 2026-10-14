@@ -2,10 +2,10 @@ export const apiBase = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000/a
 
 export type User = { id: string; username: string; role: string; status?: string; must_change_password?: boolean; organization_id?: string | null; scopes?: Array<{ organization_id: string; site_id?: string | null; line_id?: string | null }> }
 export type Device = { id: string; code: string; name: string; model: string; organization_id?: string | null; site_id?: string | null; line_id?: string | null; metadata?: Record<string, unknown>; created_at?: string }
-export type Fault = { id: string; device_id: string; session_id?: string | null; symptom: string; severity: string; status: string; creator_id: string; assigned_to?: string | null; assigned_to_name?: string | null; resolution?: string | null; created_at: string; updated_at?: string }
+export type Fault = { id: string; device_id: string; session_id?: string | null; symptom: string; fault_location?: string | null; observed_evidence?: string | null; processing_result?: string | null; processing_by_name?: string | null; processing_by_role?: string | null; processing_at?: string | null; severity: string; status: string; creator_id: string; assigned_to?: string | null; assigned_to_name?: string | null; resolution?: string | null; created_at: string; updated_at?: string }
 export type KnowledgeDoc = { id: string; name: string; version: string; status: string; organization_id?: string | null; failure_reason?: string | null; metadata?: Record<string, unknown>; chunks: number; created_at: string }
 export type AuditEvent = { id: string; trace_id: string; actor_id?: string; action: string; target?: string; result: string; details?: Record<string, unknown>; created_at: string }
-export type Session = { id: string; title: string; status: string; device_id?: string | null; created_at: string; updated_at?: string }
+export type Session = { id: string; title: string; user_id?: string; status: string; device_id?: string | null; created_at: string; updated_at?: string }
 export type Provider = { name: string; model?: string | null; enabled: boolean }
 export type PageMeta = { page: number; page_size: number; total: number; pages: number }
 export type PageResult<T> = { items: T[]; meta: PageMeta }
@@ -55,7 +55,10 @@ export async function requestPage<T>(path: string, params: Record<string, string
   if (Array.isArray(data)) return { items: data, meta: { page: Number(params.page ?? 1), page_size: Number(params.page_size ?? 20), total: data.length, pages: data.length ? 1 : 0 } }
   return data
 }
-export function fileUrl(path: string) { return `${apiBase}${path}` }
+export function fileUrl(path: string) {
+  if (/^https?:\/\//i.test(path) || path.startsWith('blob:')) return path
+  return path.startsWith('/api/v1/') ? `${apiBase}${path.slice('/api/v1'.length)}` : `${apiBase}${path}`
+}
 
 export async function downloadFile(path: string): Promise<Blob> {
   const headers = new Headers()

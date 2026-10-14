@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { request, setAuth } from '../api'
+import LoginBrandPanel from '../components/LoginBrandPanel.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -38,7 +39,7 @@ async function login() {
 
 <template>
   <main class="login-stage">
-    <div class="login-copy"><div class="login-mark"><span class="pulse-dot" aria-hidden="true"></span><span>VOICEINSPECT</span></div><p class="eyebrow">ENTERPRISE DIAGNOSTICS / 02</p><h1>让每一次判断<br><em>都有依据。</em></h1><p>统一管理组织、设备、故障、知识和诊断证据，形成可追溯的现场闭环。</p></div>
+    <LoginBrandPanel eyebrow="ENTERPRISE DIAGNOSTICS / 02" description="统一管理组织、设备、故障、知识和诊断证据，形成可追溯的现场闭环。" />
     <form class="login-form" novalidate @submit.prevent="login">
       <div class="login-form-heading"><span class="eyebrow">LOCAL DEMO ACCESS</span><h2>进入企业后台</h2><p>选择角色可自动填充本地演示账号。</p></div>
       <label for="login-user">账号</label><input id="login-user" v-model="username" autocomplete="username" placeholder="输入账号">

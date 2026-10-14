@@ -16,7 +16,7 @@
 | Async stage state | `StageTimeline` | This contract and stage state schema | queued / running / verified / partial / failed | Unit + E2E |
 | Toast | `StatusBanner` | This contract | success / warning / info / error | Live-region test |
 | Citation | `CitationDrawer` | Citation API response | Inline expand / detail route | API + interaction test |
-| CRUD | `ConfirmationCard` | Tool confirmation API | Preview / confirm / cancel / expired | Integration + E2E |
+| CRUD | `ConfirmationDialog` | Server-authorized action API | Preview / confirm / cancel / expired | Integration + E2E |
 | Select/Listbox | Native `select` in `EvidenceContext` | This contract and browser semantics | Native select | Keyboard + narrow viewport |
 | Form | Native form fields with shared validation contract | This contract | Login / composer | Typecheck + interaction test |
 | Scrollbar | Global stylesheet | `DESIGN.md` | Application document | Static audit + visual review |
