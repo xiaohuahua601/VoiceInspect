@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile, WebSocket, WebSo
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.api.dependencies import get_current_user, user_can_access_device
@@ -23,11 +24,10 @@ from backend.core.config import get_settings
 from backend.core.errors import AppError
 from backend.core.security import decode_access_token
 from backend.domain.enums import UserRole
-from backend.providers.ollama import OllamaProvider
+from backend.providers.factory import create_embedding_provider, create_llm_provider, create_vision_provider
 from backend.providers.stt import FasterWhisperSTT
 from backend.providers.tts import WindowsSapiTTS
 from backend.providers.piper import PiperTTS
-from backend.providers.vision import OllamaVision
 from backend.rag.service import KnowledgeService
 from backend.repositories.advanced_models import Asset, AuthSession, BackgroundJob, CapabilityTask, Confirmation, JobEvent, SessionEvent, ToolCall, ToolDraft
 from backend.repositories.db import get_db
@@ -42,10 +42,11 @@ from backend.workers.queue import append_event, create_job, job_view, request_ca
 
 router = APIRouter(prefix="/api/v1")
 settings = get_settings()
-ollama = OllamaProvider(settings)
-knowledge = KnowledgeService(ollama)
+ollama = create_llm_provider(settings)
+embedding = create_embedding_provider(settings)
+knowledge = KnowledgeService(embedding)
 stt = FasterWhisperSTT()
-vision = OllamaVision()
+vision = create_vision_provider(settings)
 tts = WindowsSapiTTS() if __import__("os").name == "nt" else PiperTTS()
 
 
@@ -54,6 +55,13 @@ class MultimodalMessage(BaseModel):
     text: str = ""
     audio_asset_id: str | None = None
     image_asset_id: str | None = None
+    request_id: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class FaultConfirmationPayload(BaseModel):
+    fault_location: str | None = Field(default=None, max_length=255)
+    observed_evidence: str | None = Field(default=None, max_length=4000)
+
 
 IMAGE_ONLY_PROMPT = "请根据图片观察结果，分析当前设备状态并给出安全检查建议。"
 IMAGE_ONLY_MESSAGE = "已上传现场图片，请分析设备状态。"
@@ -63,12 +71,18 @@ def _runtime_settings(db: Session):
     """Resolve persisted provider settings for new tasks without mutating global settings."""
     runtime = settings.model_copy(deep=True)
     rows = {row.name: row for row in db.scalars(select(ProviderConfig)).all()}
-    if rows.get("llm") and rows["llm"].model:
-        runtime.ollama_llm_model = rows["llm"].model
+    if runtime.model_provider.strip().lower() in {"qwen", "dashscope"}:
+        if rows.get("llm") and rows["llm"].model:
+            runtime.qwen_model = rows["llm"].model
+        if rows.get("vision") and rows["vision"].model:
+            runtime.qwen_model = rows["vision"].model
+    else:
+        if rows.get("llm") and rows["llm"].model:
+            runtime.ollama_llm_model = rows["llm"].model
+        if rows.get("vision") and rows["vision"].model:
+            runtime.ollama_vision_model = rows["vision"].model
     if rows.get("embedding") and rows["embedding"].model:
         runtime.ollama_embed_model = rows["embedding"].model
-    if rows.get("vision") and rows["vision"].model:
-        runtime.ollama_vision_model = rows["vision"].model
     return runtime
 
 
@@ -135,6 +149,33 @@ def _session_for(db: Session, session_id: str, user: User) -> DiagnosisSession:
     return session
 
 
+def _diagnosis_job(db: Session, payload: MultimodalMessage, user: User) -> BackgroundJob:
+    request_id = payload.request_id or str(uuid4())
+    existing = db.scalar(select(BackgroundJob).where(BackgroundJob.owner_id == user.id, BackgroundJob.request_id == request_id))
+    if existing:
+        return existing
+    job = create_job(
+        db,
+        kind="diagnosis.multimodal",
+        owner_id=user.id,
+        session_id=payload.session_id,
+        request_id=request_id,
+        payload={**payload.model_dump(exclude={"request_id"}), "request_id": request_id, "user_id": user.id},
+    )
+    try:
+        db.commit()
+    except IntegrityError:
+        # Two tabs can pass the read-before-create check at the same time.
+        # The database constraint is the final arbiter; return the already
+        # queued job instead of creating a second model execution.
+        db.rollback()
+        existing = db.scalar(select(BackgroundJob).where(BackgroundJob.owner_id == user.id, BackgroundJob.request_id == request_id))
+        if existing:
+            return existing
+        raise
+    return job
+
+
 def _event(db: Session, session_id: str, event_type: str, payload: dict[str, Any]) -> None:
     last = db.scalar(select(SessionEvent.sequence).where(SessionEvent.session_id == session_id).order_by(desc(SessionEvent.sequence)).limit(1)) or 0
     db.add(SessionEvent(session_id=session_id, sequence=last + 1, event_type=event_type, payload=payload))
@@ -157,14 +198,27 @@ def _task_done(task: CapabilityTask, status: str, result: dict | None = None, er
 @router.get("/capabilities")
 async def capabilities(_: User = Depends(get_current_user)) -> dict:
     llm = await ollama.health()
+    embedding_health = await embedding.health()
     return {
         "database": {"available": True},
         "llm": llm,
-        "embedding": {"available": bool(llm.get("available")), "model": settings.ollama_embed_model},
+        "embedding": {"available": bool(embedding_health.get("available")), "model": settings.ollama_embed_model},
         "stt": (await stt.health()).__dict__,
         "vision": (await vision.health()).__dict__,
         "tts": (await tts.health()).__dict__,
     }
+
+
+@router.get("/assets/{asset_id}/content")
+def asset_content(asset_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> FileResponse:
+    asset = db.get(Asset, asset_id)
+    if not asset or (asset.owner_id != user.id and user.role != UserRole.SYSTEM_ADMIN.value):
+        raise AppError("ASSET_NOT_FOUND", "附件不存在或无权访问", 404, False, "asset")
+    path = (settings.upload_dir / asset.stored_name).resolve()
+    upload_root = settings.upload_dir.resolve()
+    if upload_root not in path.parents or not path.is_file():
+        raise AppError("ASSET_MISSING", "附件文件不存在，请重新上传", 404, True, "asset")
+    return FileResponse(path, media_type=asset.mime_type, filename=asset.original_name, content_disposition_type="inline")
 
 
 @router.post("/assets")
@@ -179,14 +233,19 @@ async def upload_asset(file: UploadFile = File(...), kind: str = Form(...), sess
     return {"id": item.id, "kind": item.kind, "name": item.original_name, "mime_type": item.mime_type, "size_bytes": item.size_bytes, "status": item.status}
 
 
-@router.post("/messages/legacy")
+@router.post("/messages/legacy", status_code=202, deprecated=True)
 async def create_multimodal_message(payload: MultimodalMessage, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    # Compatibility endpoint: never execute inference in the API process.
+    return enqueue_multimodal_message(payload, user, db)
+
+    # Kept below only as source-history context during the migration; the
+    # return above makes old clients use the durable worker queue as well.
     session = _session_for(db, payload.session_id, user)
     device = db.get(Device, session.device_id) if session.device_id else None
     runtime = _runtime_settings(db)
-    runtime_ollama = OllamaProvider(runtime)
-    runtime_knowledge = KnowledgeService(runtime_ollama)
-    runtime_vision = OllamaVision(runtime)
+    runtime_ollama = create_llm_provider(runtime)
+    runtime_knowledge = KnowledgeService(create_embedding_provider(runtime))
+    runtime_vision = create_vision_provider(runtime)
     text = payload.text.strip()
     transcript: dict | None = None
     observations: dict | None = None
@@ -258,14 +317,7 @@ def enqueue_multimodal_message(payload: MultimodalMessage, user: User = Depends(
     _session_for(db, payload.session_id, user)
     if not payload.text.strip() and not payload.audio_asset_id and not payload.image_asset_id:
         raise AppError("MESSAGE_EMPTY", "请输入文字或提供可用的语音输入，或附加现场图片", 422, False, "message")
-    job = create_job(
-        db,
-        kind="diagnosis.multimodal",
-        owner_id=user.id,
-        session_id=payload.session_id,
-        payload={**payload.model_dump(), "user_id": user.id},
-    )
-    db.commit()
+    job = _diagnosis_job(db, payload, user)
     return {"job_id": job.id, "status": job.status, "session_id": payload.session_id}
 
 
@@ -277,7 +329,17 @@ def _sse(event: dict[str, Any]) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
-def _stream_message_payload(message: Message) -> dict[str, Any]:
+def _job_error_message(code: str | None) -> str:
+    return {
+        "MODEL_UNAVAILABLE": "本地模型暂时不可用，请稍后重试",
+        "MODEL_STREAM_FAILED": "模型回答生成失败，请重试",
+        "RAG_EMBED_FAILED": "知识检索服务暂时不可用，回答未完成",
+        "RAG_EMBEDDING_FAILED": "知识向量服务暂时不可用，请检查 Embedding Provider",
+        "JOB_TIMEOUT": "诊断任务等待超时，请稍后查看任务状态",
+    }.get(code or "", "诊断任务执行失败，请重试")
+
+
+def _stream_message_payload(db: Session, message: Message) -> dict[str, Any]:
     return {
         "id": message.id,
         "role": message.role,
@@ -286,20 +348,24 @@ def _stream_message_payload(message: Message) -> dict[str, Any]:
         "citations": message.citations or [],
         "stage_states": message.stage_states or {},
         "observations": message.observations or {},
+        "attachments": __import__("backend.services.message_attachments", fromlist=["message_attachment_payloads"]).message_attachment_payloads(db, message),
         "created_at": message.created_at.isoformat(),
     }
 
 
-@router.post("/messages/legacy-stream")
+@router.post("/messages/legacy-stream", deprecated=True)
 async def stream_multimodal_message(payload: MultimodalMessage, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> StreamingResponse:
+    # Compatibility endpoint: reuse the database-backed SSE implementation.
+    return enqueue_multimodal_stream(payload, user, db)
+
     async def events():
         try:
             session = _session_for(db, payload.session_id, user)
             device = db.get(Device, session.device_id) if session.device_id else None
             runtime = _runtime_settings(db)
-            runtime_ollama = OllamaProvider(runtime)
-            runtime_knowledge = KnowledgeService(runtime_ollama)
-            runtime_vision = OllamaVision(runtime)
+            runtime_ollama = create_llm_provider(runtime)
+            runtime_knowledge = KnowledgeService(create_embedding_provider(runtime))
+            runtime_vision = create_vision_provider(runtime)
             text = payload.text.strip()
             transcript: dict | None = None
             observations: dict | None = None
@@ -373,7 +439,7 @@ async def stream_multimodal_message(payload: MultimodalMessage, user: User = Dep
             _event(db, session.id, "message.completed", {"message_id": assistant.id, "stages": stage_states})
             db.commit()
             db.refresh(assistant)
-            yield _sse({"type": "complete", "message": _stream_message_payload(assistant), "metadata": metadata})
+            yield _sse({"type": "complete", "message": _stream_message_payload(db, assistant), "metadata": metadata})
         except asyncio.CancelledError:
             db.rollback()
             raise
@@ -393,14 +459,7 @@ def enqueue_multimodal_stream(payload: MultimodalMessage, user: User = Depends(g
     _session_for(db, payload.session_id, user)
     if not payload.text.strip() and not payload.audio_asset_id and not payload.image_asset_id:
         raise AppError("MESSAGE_EMPTY", "请输入文字或提供可用的语音输入，或附加现场图片", 422, False, "message")
-    job = create_job(
-        db,
-        kind="diagnosis.multimodal",
-        owner_id=user.id,
-        session_id=payload.session_id,
-        payload={**payload.model_dump(), "user_id": user.id},
-    )
-    db.commit()
+    job = _diagnosis_job(db, payload, user)
     job_id = job.id
 
     async def events():
@@ -422,12 +481,15 @@ def enqueue_multimodal_stream(payload: MultimodalMessage, user: User = Depends(g
                         yield _sse({"type": "start", **payload_data, "job_id": job_id})
                     elif item.event_type == "chunk":
                         yield _sse({"type": "chunk", **payload_data})
+                    elif item.event_type == "requeued":
+                        yield _sse({"type": "retrying", "job_id": job_id, **payload_data})
                     elif item.event_type == "complete":
                         yield _sse({"type": "complete", **payload_data, "job_id": job_id})
                         yield SSE_DONE
                         return
                     elif item.event_type == "failed":
-                        yield _sse({"type": "error", "error": {"code": current.error_code if current else "JOB_FAILED", "message": "诊断任务执行失败，请重试", "retryable": True, "stage": "job", "trace_id": str(uuid4())}})
+                        code = current.error_code if current else "JOB_FAILED"
+                        yield _sse({"type": "error", "error": {"code": code, "message": _job_error_message(code), "retryable": True, "stage": "job", "trace_id": str(uuid4())}})
                         yield SSE_DONE
                         return
                     elif item.event_type == "cancelled":
@@ -435,14 +497,15 @@ def enqueue_multimodal_stream(payload: MultimodalMessage, user: User = Depends(g
                         yield SSE_DONE
                         return
                 if current and current.status in {"failed", "cancelled"} and not rows:
-                    yield _sse({"type": "error", "error": {"code": current.error_code or "JOB_FAILED", "message": "诊断任务执行失败，请重试", "retryable": True, "stage": "job", "trace_id": str(uuid4())}})
+                    code = current.error_code or "JOB_FAILED"
+                    yield _sse({"type": "error", "error": {"code": code, "message": _job_error_message(code), "retryable": True, "stage": "job", "trace_id": str(uuid4())}})
                     yield SSE_DONE
                     return
             finally:
                 local.close()
             yield ": heartbeat\n\n"
             await asyncio.sleep(0.5)
-        yield _sse({"type": "error", "error": {"code": "JOB_TIMEOUT", "message": "诊断任务等待超时，请稍后查看任务状态", "retryable": True, "stage": "job", "trace_id": str(uuid4())}})
+        yield _sse({"type": "error", "error": {"code": "JOB_TIMEOUT", "message": _job_error_message("JOB_TIMEOUT"), "retryable": True, "stage": "job", "trace_id": str(uuid4())}})
         yield SSE_DONE
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -577,7 +640,7 @@ def create_tool_draft(payload: ToolDraftRequest, user: User = Depends(get_curren
 
 
 @router.post("/confirmations/{token}")
-def confirm_tool(token: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+def confirm_tool(token: str, payload: FaultConfirmationPayload | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     confirmation = db.get(Confirmation, token)
     if not confirmation or confirmation.owner_id != user.id:
         raise AppError("CONFIRMATION_NOT_FOUND", "确认令牌不存在或无权使用", 404, False, "tool")
@@ -589,7 +652,12 @@ def confirm_tool(token: str, user: User = Depends(get_current_user), db: Session
     draft = db.get(ToolDraft, confirmation.draft_id)
     if not draft:
         raise AppError("TOOL_DRAFT_NOT_FOUND", "工具草稿不存在", 404, False, "tool")
-    args = draft.arguments
+    args = dict(draft.arguments or {})
+    if draft.tool_name == "create_fault_record" and payload:
+        if payload.fault_location is not None:
+            args["fault_location"] = payload.fault_location.strip()
+        if payload.observed_evidence is not None:
+            args["observed_evidence"] = payload.observed_evidence.strip()
     result: dict[str, Any]
     if draft.tool_name == "create_fault_record":
         device_id = args.get("device_id")
@@ -601,7 +669,16 @@ def confirm_tool(token: str, user: User = Depends(get_current_user), db: Session
         if existing:
             result = {"status": "already_exists", "fault_record_id": existing.id}
         else:
-            record = FaultRecord(device_id=device_id, session_id=draft.session_id, symptom=symptom, severity=args.get("severity", "medium"), creator_id=user.id, idempotency_key=idem)
+            record = FaultRecord(
+                device_id=device_id,
+                session_id=draft.session_id,
+                symptom=symptom,
+                fault_location=str(args.get("fault_location", "")).strip() or None,
+                observed_evidence=str(args.get("observed_evidence", "")).strip() or None,
+                severity=args.get("severity", "medium"),
+                creator_id=user.id,
+                idempotency_key=idem,
+            )
             db.add(record)
             db.flush()
             result = {"status": "created", "fault_record_id": record.id}
@@ -614,7 +691,7 @@ def confirm_tool(token: str, user: User = Depends(get_current_user), db: Session
         device = db.get(Device, args.get("device_id"))
         if not device or not user_can_access_device(user, device, db):
             raise AppError("DEVICE_NOT_FOUND", "设备不存在或无权访问", 404, False, "tool")
-        result = {"records": [{"id": x.id, "symptom": x.symptom, "severity": x.severity, "status": x.status, "created_at": x.created_at.isoformat()} for x in db.scalars(select(FaultRecord).where(FaultRecord.device_id == device.id).order_by(desc(FaultRecord.created_at)).limit(50)).all()]}
+        result = {"records": [{"id": x.id, "symptom": x.symptom, "fault_location": x.fault_location, "observed_evidence": x.observed_evidence, "severity": x.severity, "status": x.status, "created_at": x.created_at.isoformat()} for x in db.scalars(select(FaultRecord).where(FaultRecord.device_id == device.id).order_by(desc(FaultRecord.created_at)).limit(50)).all()]}
     elif draft.tool_name == "search_manual":
         result = {"citations": asyncio.run(knowledge.search(db, str(args.get("query", "")), top_k=5))}
     else:
@@ -639,7 +716,7 @@ def device_history(device_id: str, user: User = Depends(get_current_user), db: S
     rows = db.scalars(select(FaultRecord).where(FaultRecord.device_id == device_id).order_by(desc(FaultRecord.created_at)).limit(100)).all()
     return {
         "device": {"id": device.id, "code": device.code, "model": device.model, "name": device.name},
-        "records": [{"id": row.id, "symptom": row.symptom, "severity": row.severity, "status": row.status, "creator_id": row.creator_id, "created_at": row.created_at.isoformat()} for row in rows],
+        "records": [{"id": row.id, "symptom": row.symptom, "fault_location": row.fault_location, "observed_evidence": row.observed_evidence, "severity": row.severity, "status": row.status, "creator_id": row.creator_id, "created_at": row.created_at.isoformat()} for row in rows],
     }
 
 @router.get("/audit-events")
@@ -658,3 +735,10 @@ async def synthesize(payload: SynthesizeRequest, user: User = Depends(get_curren
     except Exception as exc:
         raise AppError("TTS_UNAVAILABLE", str(exc), 503, True, "tts") from exc
     return FileResponse(output, media_type="audio/wav", filename="voiceinspect-answer.wav")
+
+
+
+
+
+
+

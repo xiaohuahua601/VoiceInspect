@@ -17,19 +17,20 @@ from backend.core.config import get_settings
 from backend.core.errors import AppError
 from backend.core.security import create_access_token, decode_access_token, hash_password, verify_password
 from backend.domain.enums import MessageRole, UserRole
-from backend.providers.ollama import OllamaProvider
+from backend.providers.factory import create_embedding_provider, create_llm_provider, use_qwen
 from backend.rag.service import KnowledgeService
 from backend.repositories.db import get_db
 from backend.repositories.models import AuditEvent, Device, DiagnosisSession, KnowledgeDoc, Message, User
 from backend.repositories.advanced_models import AuthSession, LoginAttempt
+from backend.services.message_attachments import message_attachment_payloads
 from backend.domain.device_profiles import equipment_type
 
 
 router = APIRouter(prefix="/api/v1")
 settings = get_settings()
-provider = OllamaProvider(settings)
-knowledge = KnowledgeService(provider)
-def serialize_message(message: Message) -> dict:
+provider = create_llm_provider(settings)
+knowledge = KnowledgeService(create_embedding_provider(settings))
+def serialize_message(db: Session, message: Message) -> dict:
     return {
         "id": message.id,
         "role": message.role,
@@ -38,6 +39,7 @@ def serialize_message(message: Message) -> dict:
         "citations": message.citations or [],
         "stage_states": message.stage_states or {},
         "observations": message.observations or {},
+        "attachments": message_attachment_payloads(db, message),
         "created_at": message.created_at,
     }
 
@@ -170,7 +172,7 @@ async def health(db: Session = Depends(get_db)) -> dict:
             worker_detail = {"available": worker_ok, "age_seconds": round(age, 1), "heartbeat": json.loads(heartbeat.read_text(encoding="utf-8"))}
         except (OSError, ValueError, json.JSONDecodeError):
             worker_detail = {"available": False, "reason": "worker heartbeat unreadable"}
-    return {"status": "ok" if db_ok and model_health["available"] and worker_ok else "degraded", "database": db_ok, "worker": worker_detail, "ollama": model_health, "models": {"llm": settings.ollama_llm_model, "embedding": settings.ollama_embed_model, "vision": settings.ollama_vision_model}}
+    return {"status": "ok" if db_ok and model_health["available"] and worker_ok else "degraded", "database": db_ok, "worker": worker_detail, "provider": settings.model_provider, "model": model_health, "ollama": model_health, "models": {"llm": settings.qwen_model if use_qwen(settings) else settings.ollama_llm_model, "embedding": settings.ollama_embed_model, "vision": settings.qwen_model if use_qwen(settings) else settings.ollama_vision_model}}
 
 
 @router.get("/devices")
@@ -221,7 +223,7 @@ def get_session(session_id: str, user: User = Depends(get_current_user), db: Ses
     session = db.get(DiagnosisSession, session_id)
     if not session or (session.user_id != user.id and user.role != UserRole.SYSTEM_ADMIN.value):
         raise AppError("SESSION_NOT_FOUND", "会话不存在或无权访问", 404, False, "session")
-    return {**serialize_session(session), "messages": [serialize_message(item) for item in sorted(session.messages, key=lambda x: x.created_at)]}
+    return {**serialize_session(session), "messages": [serialize_message(db, item) for item in sorted(session.messages, key=lambda x: x.created_at)]}
 
 
 @router.post("/messages")
@@ -257,7 +259,7 @@ async def create_message(payload: MessageCreateRequest, user: User = Depends(get
     session.updated_at = session.updated_at
     db.commit()
     db.refresh(assistant)
-    return {"message": serialize_message(assistant), "metadata": metadata}
+    return {"message": serialize_message(db, assistant), "metadata": metadata}
 
 
 @router.post("/knowledge/text")
@@ -299,3 +301,4 @@ def get_citation(chunk_id: str, _: User = Depends(get_current_user), db: Session
         raise AppError("CITATION_NOT_FOUND", "引用不存在", 404, False, "rag")
     document = db.get(KnowledgeDoc, row.doc_id)
     return {"citation_id": row.id, "document": document.name if document else "未知文档", "version": document.version if document else None, "page": row.page, "section": row.section, "quote_text": row.text, "metadata": document.metadata_json if document else {}}
+

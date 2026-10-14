@@ -75,6 +75,8 @@ def _fault_view(item: FaultRecord, db: Session) -> dict:
         "device_model": device.model if device else "-",
         "session_id": item.session_id or "",
         "symptom": item.symptom,
+        "fault_location": item.fault_location or "",
+        "observed_evidence": item.observed_evidence or "",
         "severity": item.severity,
         "severity_label": _severity_label(item.severity),
         "status": item.status,
@@ -125,6 +127,8 @@ def _fault_rows(db: Session, device_ids: set[str]) -> list[dict]:
 CSV_FIELDS = [
     ("故障编号", "id"),
     ("故障现象", "symptom"),
+    ("故障部位/位置", "fault_location"),
+    ("现场证据/排查依据", "observed_evidence"),
     ("设备编号", "device_code"),
     ("设备名称", "device_name"),
     ("设备型号", "device_model"),

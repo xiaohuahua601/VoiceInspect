@@ -19,7 +19,14 @@ def create_fault(operator: TestClient) -> str:
     draft = operator.post("/api/v1/tool-drafts", json={
         "session_id": session["id"],
         "tool_name": "create_fault_record",
-        "arguments": {"device_id": device["id"], "symptom": "assignment test", "severity": "medium", "idempotency_key": str(uuid4())},
+        "arguments": {
+            "device_id": device["id"],
+            "symptom": "assignment test",
+            "fault_location": "冷却器出口管路",
+            "observed_evidence": "压力表读数波动，现场记录已留存",
+            "severity": "medium",
+            "idempotency_key": str(uuid4()),
+        },
     })
     assert draft.status_code == 200, draft.text
     confirmation = operator.post(f"/api/v1/confirmations/{draft.json()['confirmation_token']}")
@@ -71,6 +78,7 @@ def test_operator_is_read_only_and_supervisor_can_assign_and_reassign():
     verified = supervisor.post(f"/api/v1/fault-records/{fault_id}/verify", json={"note": "验证通过"})
     assert verified.status_code == 200
     assert verified.json()["status"] == "pending_verification"
+
     closed = supervisor.post(f"/api/v1/fault-records/{fault_id}/close", json={"resolution": "已完成处理"})
     assert closed.status_code == 200
     assert closed.json()["status"] == "closed"
@@ -78,6 +86,37 @@ def test_operator_is_read_only_and_supervisor_can_assign_and_reassign():
     blocked = supervisor.post(f"/api/v1/fault-records/{fault_id}/assign", json={"assigned_to": operator.get("/api/v1/auth/me").json()["id"]})
     assert blocked.status_code == 409
     assert blocked.json()["error"]["code"] == "FAULT_STATUS_TRANSITION_INVALID"
+
+
+def test_assigned_operator_can_submit_processing_result_for_supervisor_verification():
+    operator = login("operator", "change-me")
+    supervisor = login("supervisor", "change-me-supervisor")
+    fault_id = create_fault(operator)
+    assert supervisor.post(f"/api/v1/fault-records/{fault_id}/confirm", json={"note": "主管确认"}).status_code == 200
+    operator_id = operator.get("/api/v1/auth/me").json()["id"]
+    assigned = supervisor.post(
+        f"/api/v1/fault-records/{fault_id}/assign",
+        json={"assigned_to": operator_id, "idempotency_key": str(uuid4())},
+    )
+    assert assigned.status_code == 200, assigned.text
+    assert assigned.json()["status"] == "in_progress"
+
+    submitted = operator.post(
+        f"/api/v1/fault-records/{fault_id}/submit-verification",
+        json={"note": "已调整冷却风道并完成复测，压力恢复正常"},
+    )
+    assert submitted.status_code == 200, submitted.text
+    assert submitted.json()["status"] == "pending_verification"
+    detail = supervisor.get(f"/api/v1/fault-records/{fault_id}")
+    assert detail.status_code == 200
+    assert detail.json()["processing_result"] == "已调整冷却风道并完成复测，压力恢复正常"
+    assert detail.json()["processing_by_name"] == "operator"
+
+    operator_forbidden = operator.post(f"/api/v1/fault-records/{fault_id}/close", json={"resolution": "operator must not close"})
+    assert operator_forbidden.status_code == 403
+    closed = supervisor.post(f"/api/v1/fault-records/{fault_id}/close", json={"resolution": "主管验证通过并关闭"})
+    assert closed.status_code == 200
+    assert closed.json()["status"] == "closed"
 
 
 def test_operator_can_mark_only_own_notifications_as_read():

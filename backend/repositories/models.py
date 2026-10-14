@@ -112,6 +112,7 @@ class Message(Base):
     __tablename__ = "messages"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), index=True)
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("background_jobs.id"), nullable=True, index=True)
     role: Mapped[str] = mapped_column(String(20))
     text: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="completed")
@@ -179,6 +180,8 @@ class FaultRecord(Base):
     device_id: Mapped[str] = mapped_column(ForeignKey("devices.id"), index=True)
     session_id: Mapped[str | None] = mapped_column(ForeignKey("sessions.id"), nullable=True, index=True)
     symptom: Mapped[str] = mapped_column(Text)
+    fault_location: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    observed_evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
     severity: Mapped[str] = mapped_column(String(20), default="medium")
     status: Mapped[str] = mapped_column(String(20), default="new")
     creator_id: Mapped[str] = mapped_column(ForeignKey("users.id"))

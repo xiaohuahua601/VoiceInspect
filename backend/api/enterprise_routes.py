@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, func, select
+from sqlalchemy import delete, desc, func, select
 from sqlalchemy.orm import Session
 
 from backend.api.dependencies import get_current_user, require_roles, user_can_access_device, visible_devices
@@ -20,21 +20,26 @@ from backend.core.security import hash_password, password_policy_error, verify_p
 from backend.domain.enums import FaultStatus, KnowledgeStatus, UserRole
 from backend.repositories.db import get_db
 from backend.rag.service import KnowledgeService
-from backend.providers.ollama import OllamaProvider
+from backend.providers.factory import create_embedding_provider, create_llm_provider, use_qwen
 from backend.providers.stt import FasterWhisperSTT
 from backend.providers.vision import OllamaVision
 from backend.providers.tts import WindowsSapiTTS
 from backend.providers.piper import PiperTTS
 from backend.repositories.models import (
-    AuditEvent, Device, DiagnosisSession, FaultEvent, FaultRecord, KnowledgeDoc,
+    AuditEvent, Citation, Device, DiagnosisSession, FaultEvent, FaultRecord, KnowledgeDoc, Message,
     Notification, Organization, ProductionLine, ProviderConfig, ReportExport, Site, User, UserScope,
     new_id, utc_now,
 )
 from backend.workers.queue import create_job, job_view
+from backend.services.message_attachments import message_attachment_payloads
+from backend.repositories.advanced_models import (
+    Asset, BackgroundJob, CapabilityTask, Confirmation, JobEvent, MessageAsset,
+    SessionEvent, ToolCall, ToolDraft,
+)
 
 router = APIRouter(prefix="/api/v1")
 settings = get_settings()
-knowledge_service = KnowledgeService(OllamaProvider(settings))
+knowledge_service = KnowledgeService(create_embedding_provider(settings))
 
 
 class NamedPayload(BaseModel):
@@ -81,12 +86,18 @@ class ScopePayload(BaseModel):
 class FaultAction(BaseModel):
     note: str | None = Field(default=None, max_length=2000)
     assigned_to: str | None = None
+    fault_location: str | None = Field(default=None, max_length=255)
+    observed_evidence: str | None = Field(default=None, max_length=4000)
     resolution: str | None = Field(default=None, max_length=4000)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 class ReportPayload(BaseModel):
     format: str = "csv"
+
+
+class SessionBatchDeletePayload(BaseModel):
+    session_ids: list[str] = Field(min_length=1, max_length=100)
 
 
 class PasswordChange(BaseModel):
@@ -127,6 +138,7 @@ def _device_view(x: Device) -> dict:
 def _fault_view(x: FaultRecord, db: Session | None = None) -> dict:
     assignee = db.get(User, x.assigned_to) if db and x.assigned_to else None
     return {"id": x.id, "device_id": x.device_id, "session_id": x.session_id, "symptom": x.symptom,
+            "fault_location": x.fault_location, "observed_evidence": x.observed_evidence,
             "severity": x.severity, "status": x.status, "creator_id": x.creator_id, "assigned_to": x.assigned_to,
             "assigned_to_name": assignee.username if assignee else None,
             "resolution": x.resolution, "due_at": x.due_at, "created_at": x.created_at, "updated_at": x.updated_at}
@@ -381,9 +393,17 @@ def _transition(db: Session, item: FaultRecord, user: User, target: FaultStatus,
     if target not in allowed.get(FaultStatus(item.status), set()):
         raise AppError("FAULT_STATUS_TRANSITION_INVALID", "当前故障状态不允许此操作", 409, False, "fault")
     before = item.status; item.status = target.value
+    if payload.fault_location is not None: item.fault_location = payload.fault_location.strip() or None
+    if payload.observed_evidence is not None: item.observed_evidence = payload.observed_evidence.strip() or None
     if target == FaultStatus.CONFIRMED: item.confirmed_by = user.id
     if target == FaultStatus.PENDING_VERIFICATION: item.verified_by = user.id
-    if target == FaultStatus.CLOSED: item.closed_by, item.resolution = user.id, payload.resolution or payload.note
+    if target == FaultStatus.CLOSED:
+        location = item.fault_location
+        evidence = item.observed_evidence
+        resolution = (payload.resolution or payload.note or "").strip()
+        if not location or not evidence or not resolution:
+            raise AppError("FAULT_CLOSURE_CONTEXT_REQUIRED", "关闭故障前必须填写故障部位、现场证据和处理结果", 422, False, "fault")
+        item.closed_by, item.resolution = user.id, resolution
     if payload.assigned_to: item.assigned_to = _validate_assignee(db, item, payload.assigned_to).id
     db.add(FaultEvent(fault_id=item.id, actor_id=user.id, from_status=before, to_status=item.status, note=payload.note or payload.resolution))
     _audit(db, user, action, item.id, {"from": before, "to": item.status}); db.commit(); db.refresh(item)
@@ -416,7 +436,31 @@ def overdue_faults(user: User = Depends(get_current_user), db: Session = Depends
 def fault_detail(fault_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     item = _fault(db, fault_id, user)
     events = db.scalars(select(FaultEvent).where(FaultEvent.fault_id == item.id).order_by(FaultEvent.created_at)).all()
-    return {**_fault_view(item, db), "events": [{"id": x.id, "from_status": x.from_status, "to_status": x.to_status, "note": x.note, "actor_id": x.actor_id, "created_at": x.created_at} for x in events]}
+    processing_event = next(
+        (event for event in reversed(events) if event.to_status == FaultStatus.PENDING_VERIFICATION.value and event.note),
+        None,
+    )
+    processing_actor = db.get(User, processing_event.actor_id) if processing_event else None
+    return {
+        **_fault_view(item, db),
+        "processing_result": processing_event.note if processing_event else None,
+        "processing_by_name": processing_actor.username if processing_actor else None,
+        "processing_by_role": processing_actor.role if processing_actor else None,
+        "processing_at": processing_event.created_at if processing_event else None,
+        "events": [
+            {
+                "id": x.id,
+                "from_status": x.from_status,
+                "to_status": x.to_status,
+                "note": x.note,
+                "actor_id": x.actor_id,
+                "actor_name": (db.get(User, x.actor_id).username if db.get(User, x.actor_id) else x.actor_id),
+                "actor_role": (db.get(User, x.actor_id).role if db.get(User, x.actor_id) else None),
+                "created_at": x.created_at,
+            }
+            for x in events
+        ],
+    }
 
 
 def _fault_action(fault_id: str, payload: FaultAction | None, target: FaultStatus, action: str, user: User, db: Session) -> dict:
@@ -456,6 +500,41 @@ def fault_assign(fault_id: str, payload: FaultAction, user: User = Depends(requi
 @router.post("/fault-records/{fault_id}/start")
 def fault_start(fault_id: str, payload: FaultAction | None = None, user: User = Depends(require_roles(UserRole.MAINTENANCE_SUPERVISOR, UserRole.SYSTEM_ADMIN)), db: Session = Depends(get_db)) -> dict:
     return _fault_action(fault_id, payload, FaultStatus.IN_PROGRESS, "fault.started", user, db)
+
+
+@router.post("/fault-records/{fault_id}/submit-verification")
+def fault_submit_verification(fault_id: str, payload: FaultAction, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    item = _fault(db, fault_id, user)
+    if user.role != UserRole.OPERATOR.value or item.assigned_to != user.id:
+        raise AppError("AUTH_FORBIDDEN", "只有当前负责人操作员可以提交处理结果", 403, False, "auth")
+    if item.status != FaultStatus.IN_PROGRESS.value:
+        raise AppError("FAULT_STATUS_TRANSITION_INVALID", "只有处理中故障可以提交处理结果", 409, False, "fault")
+    if not (payload.note or payload.resolution):
+        raise AppError("FAULT_PROCESSING_NOTE_REQUIRED", "请填写处理结果或复测说明", 422, False, "fault")
+    location = (payload.fault_location or item.fault_location or "").strip()
+    evidence = (payload.observed_evidence or item.observed_evidence or "").strip()
+    if not location or not evidence:
+        raise AppError("FAULT_CLOSURE_CONTEXT_REQUIRED", "请先填写故障部位和现场证据", 422, False, "fault")
+
+    before = item.status
+    item.fault_location = location
+    item.observed_evidence = evidence
+    item.status = FaultStatus.PENDING_VERIFICATION.value
+    db.add(FaultEvent(
+        fault_id=item.id,
+        actor_id=user.id,
+        from_status=before,
+        to_status=item.status,
+        note=payload.note or payload.resolution,
+    ))
+    _audit(db, user, "fault.submitted_for_verification", item.id, {
+        "from": before,
+        "to": item.status,
+        "assigned_to": item.assigned_to,
+    })
+    db.commit()
+    db.refresh(item)
+    return _fault_view(item, db)
 
 
 @router.post("/fault-records/{fault_id}/verify")
@@ -616,7 +695,7 @@ def report_download(report_id: str, user: User = Depends(get_current_user), db: 
 
 @router.get("/settings/providers")
 def provider_list(user: User = Depends(require_roles(UserRole.SYSTEM_ADMIN)), db: Session = Depends(get_db)) -> list[dict]:
-    defaults = {"llm": settings.ollama_llm_model, "embedding": settings.ollama_embed_model, "vision": settings.ollama_vision_model, "stt": settings.stt_model_size, "tts": settings.piper_voice}
+    defaults = {"llm": settings.qwen_model if use_qwen(settings) else settings.ollama_llm_model, "embedding": settings.ollama_embed_model, "vision": settings.qwen_model if use_qwen(settings) else settings.ollama_vision_model, "stt": settings.stt_model_size, "tts": settings.piper_voice}
     rows = {x.name: x for x in db.scalars(select(ProviderConfig)).all()}
     return [{"name": n, "model": rows[n].model if n in rows else m, "enabled": rows[n].enabled if n in rows else bool(m)} for n, m in defaults.items()]
 
@@ -657,6 +736,7 @@ def enterprise_session_list(page: int | None = None, page_size: int = 20, search
         visible.append({
             "id": item.id,
             "title": item.title,
+            "user_id": item.user_id,
             "status": item.status,
             "device_id": item.device_id,
             "organization_id": item.organization_id,
@@ -684,6 +764,7 @@ def enterprise_session_detail(session_id: str, user: User = Depends(get_current_
     return {
         "id": item.id,
         "title": item.title,
+        "user_id": item.user_id,
         "status": item.status,
         "device_id": item.device_id,
         "organization_id": item.organization_id,
@@ -697,28 +778,172 @@ def enterprise_session_detail(session_id: str, user: User = Depends(get_current_
                 "status": message.status,
                 "citations": message.citations or [],
                 "stage_states": message.stage_states or {},
+                "observations": message.observations or {},
+                "transcript": message.transcript or {},
+                "attachments": message_attachment_payloads(db, message),
                 "created_at": message.created_at,
             }
             for message in sorted(item.messages, key=lambda value: value.created_at)
         ],
     }
 
+def _delete_session_data(db: Session, item: DiagnosisSession, user: User) -> tuple[dict, list[Path]]:
+    """Remove conversation-owned data without committing the surrounding transaction."""
+    message_ids = list(db.scalars(select(Message.id).where(Message.session_id == item.id)))
+    job_ids = list(db.scalars(select(BackgroundJob.id).where(BackgroundJob.session_id == item.id)))
+    draft_ids = list(db.scalars(select(ToolDraft.id).where(ToolDraft.session_id == item.id)))
+    assets = list(db.scalars(select(Asset).where(Asset.session_id == item.id)))
+    report_rows = list(db.scalars(select(ReportExport).where(ReportExport.job_id.in_(job_ids)))) if job_ids else []
+    file_paths = [settings.upload_dir / asset.stored_name for asset in assets]
+    file_paths.extend(Path(report.file_path) for report in report_rows if report.file_path)
+
+    # Fault records have an independent operational and audit lifecycle. Retain
+    # them but break the optional conversation link before deleting the session.
+    db.query(FaultRecord).filter(FaultRecord.session_id == item.id).update({"session_id": None}, synchronize_session=False)
+    if draft_ids:
+        db.execute(delete(Confirmation).where(Confirmation.draft_id.in_(draft_ids)))
+        db.execute(delete(ToolCall).where(ToolCall.draft_id.in_(draft_ids)))
+        db.execute(delete(ToolDraft).where(ToolDraft.id.in_(draft_ids)))
+    if job_ids:
+        db.execute(delete(JobEvent).where(JobEvent.job_id.in_(job_ids)))
+        if report_rows:
+            db.execute(delete(ReportExport).where(ReportExport.id.in_([report.id for report in report_rows])))
+    db.execute(delete(CapabilityTask).where(CapabilityTask.session_id == item.id))
+    if message_ids:
+        db.execute(delete(MessageAsset).where(MessageAsset.message_id.in_(message_ids)))
+        db.execute(delete(Citation).where(Citation.message_id.in_(message_ids)))
+        db.execute(delete(Message).where(Message.id.in_(message_ids)))
+    db.execute(delete(SessionEvent).where(SessionEvent.session_id == item.id))
+    if job_ids:
+        db.execute(delete(BackgroundJob).where(BackgroundJob.id.in_(job_ids)))
+    if assets:
+        db.execute(delete(Asset).where(Asset.id.in_([asset.id for asset in assets])))
+
+    title = item.title
+    db.delete(item)
+    summary = {
+        "id": item.id,
+        "title": title,
+        "deleted": True,
+        "message_count": len(message_ids),
+        "attachment_count": len(assets),
+        "report_count": len(report_rows),
+        "job_count": len(job_ids),
+    }
+    _audit(db, user, "session.deleted", item.id, {
+        "title": title,
+        "message_count": len(message_ids),
+        "attachment_count": len(assets),
+        "report_count": len(report_rows),
+        "job_count": len(job_ids),
+        "fault_links_retained": True,
+    })
+    return summary, file_paths
+
+
+def _remove_session_files(file_paths: list[Path]) -> int:
+    removed_files = 0
+    roots = (settings.upload_dir.resolve(), settings.export_dir.resolve())
+    for path in file_paths:
+        resolved = path.resolve()
+        if any(root == resolved or root in resolved.parents for root in roots):
+            try:
+                resolved.unlink(missing_ok=True)
+                removed_files += 1
+            except OSError:
+                # The database operation is authoritative. A missing or locked
+                # local file must not make a deleted session appear restored.
+                pass
+    return removed_files
+
+
+def _session_delete_job(db: Session, session_id: str) -> str | None:
+    return db.scalar(
+        select(BackgroundJob.id).where(
+            BackgroundJob.session_id == session_id,
+            BackgroundJob.status.in_({"queued", "running", "retrying"}),
+        ).limit(1)
+    )
+
+
+@router.post("/sessions/batch-delete")
+def batch_delete_sessions(payload: SessionBatchDeletePayload, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """Delete selected sessions in one transaction and report non-deletable rows."""
+    session_ids = list(dict.fromkeys(payload.session_ids))
+    deleted: list[dict] = []
+    skipped: list[dict] = []
+    failed: list[dict] = []
+    file_paths: list[Path] = []
+    try:
+        for session_id in session_ids:
+            item = db.get(DiagnosisSession, session_id)
+            if not item or (item.user_id != user.id and user.role != UserRole.SYSTEM_ADMIN.value):
+                failed.append({"id": session_id, "reason": "会话不存在或无权删除"})
+                continue
+            active_job = _session_delete_job(db, item.id)
+            if active_job:
+                skipped.append({
+                    "id": item.id,
+                    "title": item.title,
+                    "reason": "会话仍有正在处理的任务，请先等待完成或取消任务",
+                    "job_id": active_job,
+                })
+                continue
+            summary, paths = _delete_session_data(db, item, user)
+            deleted.append(summary)
+            file_paths.extend(paths)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return {
+        "requested": len(session_ids),
+        "deleted": deleted,
+        "skipped": skipped,
+        "failed": failed,
+        "files_removed": _remove_session_files(file_paths),
+    }
+
+
+@router.delete("/sessions/{session_id}")
+def delete_session(session_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """Permanently remove an owned session after all active work has stopped."""
+    item = db.get(DiagnosisSession, session_id)
+    if not item or (item.user_id != user.id and user.role != UserRole.SYSTEM_ADMIN.value):
+        raise AppError("SESSION_NOT_FOUND", "会话不存在或无权删除", 404, False, "session")
+    active_job = _session_delete_job(db, item.id)
+    if active_job:
+        raise AppError(
+            "SESSION_DELETE_JOB_ACTIVE",
+            "会话仍有正在处理的任务，请先等待完成或取消任务后再删除",
+            409,
+            True,
+            "session",
+            {"job_id": active_job},
+        )
+    try:
+        summary, file_paths = _delete_session_data(db, item, user)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return {"id": summary["id"], "deleted": True, "files_removed": _remove_session_files(file_paths)}
 
 async def _provider_health(name: str, model: str | None = None) -> dict:
     if name in {"llm", "embedding", "vision"}:
-        health = await OllamaProvider(settings).health()
-        wanted = model or {
-            "llm": settings.ollama_llm_model,
-            "embedding": settings.ollama_embed_model,
-            "vision": settings.ollama_vision_model,
-        }[name]
-        available = bool(health.get("available")) and (not wanted or wanted in health.get("models", []))
-        return {
-            "available": available,
-            "model": wanted,
-            "models": health.get("models", []),
-            "reason": None if available else "模型未安装或 Ollama 不可用",
-        }
+        if name == "embedding":
+            health = await create_embedding_provider(settings).health()
+            wanted = model or settings.ollama_embed_model
+            reason = "Embedding 模型未安装或 Ollama 不可用"
+        else:
+            health = await create_llm_provider(settings).health()
+            wanted = model or (settings.qwen_model if use_qwen(settings) else (settings.ollama_llm_model if name == "llm" else settings.ollama_vision_model))
+            reason = "模型未配置或服务不可用"
+        available = bool(health.get("available"))
+        models = health.get("models", [])
+        if available and models and wanted:
+            available = wanted in models
+        return {"available": available, "model": wanted, "models": models, "reason": None if available else reason}
     provider = FasterWhisperSTT() if name == "stt" else (
         WindowsSapiTTS() if __import__("os").name == "nt" else PiperTTS()
     )
