@@ -14,7 +14,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from backend.main import seed_demo_data
-from backend.providers.ollama import OllamaProvider
+from backend.providers.factory import create_embedding_provider
 from backend.rag.service import KnowledgeService
 from backend.repositories.db import SessionLocal, init_db
 from backend.repositories.models import AuditEvent, KnowledgeDoc, User, new_id
@@ -30,7 +30,7 @@ def main() -> None:
     init_db()
     seed_demo_data()
     settings = get_settings()
-    service = KnowledgeService(OllamaProvider(settings))
+    service = KnowledgeService(create_embedding_provider(settings))
     db = SessionLocal()
     try:
         admin = db.scalar(select(User).where(User.username == settings.demo_admin_username))
@@ -40,6 +40,7 @@ def main() -> None:
             content_path = root / "data/knowledge/public" / item["path"]
             content = content_path.read_text(encoding="utf-8")
             metadata = {key: item.get(key) for key in ("source_url", "publisher", "license", "document_type", "language", "applicability")}
+            metadata["device_type"] = item.get("device_type")
             metadata["sha256"] = hashlib.sha256(content.encode("utf-8")).hexdigest()
             document = asyncio.run(service.ingest_text(db, item["name"], content, item["version"], None, admin.organization_id, metadata))
             if args.publish:

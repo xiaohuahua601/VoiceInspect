@@ -96,7 +96,10 @@ class KnowledgeService:
         include_document_types: set[str] | None = None,
         device_type: str | None = None,
     ) -> list[dict]:
-        query_vector = (await self.provider.embed([query]))[0]
+        try:
+            query_vector = (await self.provider.embed([query]))[0]
+        except AppError:
+            query_vector = None
         stmt = select(KnowledgeChunk, KnowledgeDoc).join(KnowledgeDoc, KnowledgeDoc.id == KnowledgeChunk.doc_id).where(KnowledgeDoc.status == "published")
         if device_model:
             stmt = stmt.where((KnowledgeChunk.device_model == device_model) | (KnowledgeChunk.device_model.is_(None)))
@@ -108,7 +111,18 @@ class KnowledgeService:
             if (doc.metadata_json or {}).get("document_type", "maintenance_guide") in allowed_types
             and (not device_type or not (doc.metadata_json or {}).get("device_type") or (doc.metadata_json or {}).get("device_type") == device_type)
         ]
-        scored = [(cosine(query_vector, chunk.vector or []), chunk, doc) for chunk, doc in rows]
+        if query_vector is not None:
+            scored = [(cosine(query_vector, chunk.vector or []), chunk, doc) for chunk, doc in rows]
+        else:
+            normalized_query = re.sub(r"\s+", "", query.lower())
+            query_terms = {normalized_query[index:index + 2] for index in range(max(0, len(normalized_query) - 1))}
+            scored = []
+            for chunk, doc in rows:
+                normalized_chunk = re.sub(r"\s+", "", chunk.text.lower())
+                chunk_terms = {normalized_chunk[index:index + 2] for index in range(max(0, len(normalized_chunk) - 1))}
+                overlap = len(query_terms & chunk_terms)
+                if overlap:
+                    scored.append((max(0.15, overlap / max(1, len(query_terms))), chunk, doc))
         scored.sort(key=lambda item: item[0], reverse=True)
         return [
             {

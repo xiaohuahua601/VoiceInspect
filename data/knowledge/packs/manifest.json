@@ -1,6 +1,57 @@
 [
-  {"path":"compressor-maintenance-pack.txt","name":"空压机通用维护与故障模式知识包","version":"1.0","device_type":"compressor","document_type":"maintenance_guide","publisher":"VoiceInspect curated guide","license":"项目自有整理；仅作通用分诊依据","applicability":"通用空压机；不替代厂商手册","source_url":"https://www.osha.gov/laws-regs/regulations/standardnumber/1910/1910.169"},
-  {"path":"hydraulic-maintenance-pack.txt","name":"液压系统通用维护与故障模式知识包","version":"1.0","device_type":"hydraulic_system","document_type":"maintenance_guide","publisher":"VoiceInspect curated guide","license":"项目自有整理；需结合具体设备手册","applicability":"通用液压动力单元和工业液压系统","source_url":"https://www.iso.org/standard/67807.html"},
-  {"path":"motor-maintenance-pack.txt","name":"驱动电机与变频驱动通用故障模式知识包","version":"1.0","device_type":"motor","document_type":"fault_case","publisher":"VoiceInspect curated guide","license":"项目自有整理；需结合电机和驱动器手册","applicability":"通用低压工业驱动电机和变频驱动系统","source_url":"https://www.nema.org/standards/view/motors-and-generators"},
-  {"path":"industrial-machine-maintenance-pack.txt","name":"通用加工设备维护与安全故障模式知识包","version":"1.0","device_type":"industrial_machine","document_type":"safety_guidance","publisher":"VoiceInspect curated guide","license":"项目自有整理；需结合机床制造商手册","applicability":"通用加工设备、主轴、刀具、冷却和联锁系统","source_url":"https://www.osha.gov/machine-guarding"}
+  {
+    "path": "compressor-maintenance-pack.txt",
+    "name": "空压机通用维护与故障模式知识包",
+    "version": "1.1",
+    "device_type": "compressor",
+    "document_type": "maintenance_guide",
+    "publisher": "VoiceInspect curated guide",
+    "license": "项目自有整理；仅作通用分诊依据",
+    "applicability": "通用空压机；不替代厂商手册",
+    "source_url": "https://www.osha.gov/laws-regs/regulations/standardnumber/1910/1910.169"
+  },
+  {
+    "path": "hydraulic-maintenance-pack.txt",
+    "name": "液压系统通用维护与故障模式知识包",
+    "version": "1.1",
+    "device_type": "hydraulic_system",
+    "document_type": "maintenance_guide",
+    "publisher": "VoiceInspect curated guide",
+    "license": "项目自有整理；需结合具体设备手册",
+    "applicability": "通用液压动力单元和工业液压系统",
+    "source_url": "https://www.osha.gov/laws-regs/regulations/standardnumber/1910/1910.147"
+  },
+  {
+    "path": "motor-maintenance-pack.txt",
+    "name": "驱动电机与变频驱动通用故障模式知识包",
+    "version": "1.1",
+    "device_type": "motor",
+    "document_type": "maintenance_guide",
+    "publisher": "VoiceInspect curated guide",
+    "license": "项目自有整理；需结合电机和驱动器手册",
+    "applicability": "通用低压工业驱动电机和变频驱动系统",
+    "source_url": "https://www.osha.gov/laws-regs/regulations/standardnumber/1910/1910.147"
+  },
+  {
+    "path": "industrial-machine-maintenance-pack.txt",
+    "name": "通用加工设备维护与安全故障模式知识包",
+    "version": "1.1",
+    "device_type": "industrial_machine",
+    "document_type": "safety_guidance",
+    "publisher": "VoiceInspect curated guide",
+    "license": "项目自有整理；需结合机床制造商手册",
+    "applicability": "通用加工设备、主轴、刀具、冷却和联锁系统",
+    "source_url": "https://www.osha.gov/laws-regs/regulations/standardnumber/1910/1910.212"
+  },
+  {
+    "path": "energy-isolation-evidence-pack.txt",
+    "name": "通用设备检修前能源隔离与故障证据记录指引",
+    "version": "1.0",
+    "device_type": null,
+    "document_type": "safety_guidance",
+    "publisher": "VoiceInspect curated guide",
+    "license": "项目自有整理；仅作通用安全与证据记录依据",
+    "applicability": "空压机、液压系统、驱动电机和通用加工设备；不替代企业能源隔离程序",
+    "source_url": "https://www.osha.gov/laws-regs/regulations/standardnumber/1910/1910.147"
+  }
 ]

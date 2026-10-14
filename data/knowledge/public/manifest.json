@@ -8,7 +8,8 @@
     "license": "公开法规资料摘要；保留来源链接",
     "document_type": "official_safety_guidance",
     "language": "zh-CN",
-    "applicability": "通用空压机与储气罐安全；非 COMPRESSOR-A 专用"
+    "applicability": "通用空压机与储气罐安全；非 COMPRESSOR-A 专用",
+    "device_type": "compressor"
   },
   {
     "path": "compressed-air-safety.txt",
@@ -19,7 +20,8 @@
     "license": "公开安全规范摘要；保留来源链接",
     "document_type": "official_safety_guidance",
     "language": "zh-CN",
-    "applicability": "通用压缩空气系统；非 COMPRESSOR-A 专用"
+    "applicability": "通用压缩空气系统；非 COMPRESSOR-A 专用",
+    "device_type": "compressor"
   },
   {
     "path": "air-compressor-maintenance-basics.txt",
@@ -30,6 +32,7 @@
     "license": "项目自有整理；依据公开安全资料",
     "document_type": "curated_maintenance_guide",
     "language": "zh-CN",
-    "applicability": "通用分诊框架；必须结合具体厂商手册"
+    "applicability": "通用分诊框架；必须结合具体厂商手册",
+    "device_type": "compressor"
   }
 ]
