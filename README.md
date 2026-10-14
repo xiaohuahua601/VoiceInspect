@@ -27,7 +27,7 @@
 - [九、角色与演示账号](#九角色与演示账号)
 - [十、项目结构](#十项目结构)
 - [十一、测试与质量状态](#十一测试与质量状态)
-- [十二、深入文档](#十二深入文档)
+- [十二、运行截图](#十二运行截图)
 - [十三、当前边界](#十三当前边界)
 - [十四、安全说明](#十四安全说明)
 
@@ -506,25 +506,25 @@ docker compose up -d
 
 ---
 
-## 十二、深入文档
+## 十二、运行截图
 
-### 12.1 理解实现
+> 以下截图来自本地演示环境，页面中的设备、故障、会话和知识数量均为演示数据，不代表生产规模或现场准确率。
 
-- [架构与代码实现深度解析](docs/ARCHITECTURE-DEEP-DIVE.md)
-- [多模态质量方案](docs/MULTIMODAL-QUALITY.md)
-- [运行、迁移、备份与恢复手册](docs/RUNBOOK.md)
-- [内部试点发布准备](docs/RELEASE-READINESS.md)
+### 12.1 运营总览
 
-### 12.2 答辩和面试
+![VoiceInspect 运营总览](docs/images/voiceinspect-dashboard.jpg)
 
-- [项目面试简介](docs/项目面试简介.md)
-- [面试深度复盘与实现说明](docs/面试深度复盘与实现说明.md)
-- [答辩 PPT（演示文稿）提纲与扩展讲解](docs/答辩PPT提纲与扩展讲解.md)
-- [项目演示与 20 分钟讲稿](docs/项目演示与20分钟讲稿.md)
+### 12.2 多模态诊断
 
-### 12.3 合规
+![VoiceInspect 多模态诊断](docs/images/voiceinspect-diagnosis.jpg)
 
-- [第三方资料与许可证说明](docs/THIRD_PARTY_NOTICES.md)
+### 12.3 故障闭环
+
+![VoiceInspect 故障闭环](docs/images/voiceinspect-faults.jpg)
+
+### 12.4 知识库管理
+
+![VoiceInspect 知识库管理](docs/images/voiceinspect-knowledge.jpg)
 
 ---
 
