@@ -55,7 +55,7 @@ class OllamaProvider:
             async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
                 response = await client.post(
                     f"{self.settings.ollama_base_url}/api/generate",
-                    json={"model": self.settings.ollama_llm_model, "prompt": composed, "stream": False, "options": self._generation_options()},
+                    json={"model": self.settings.ollama_llm_model, "prompt": composed, "stream": False, "keep_alive": self.settings.ollama_llm_keep_alive, "options": self._generation_options()},
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -63,6 +63,13 @@ class OllamaProvider:
                 "provider": "ollama",
                 "model": self.settings.ollama_llm_model,
                 "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+                "total_duration": data.get("total_duration"),
+                "load_duration": data.get("load_duration"),
+                "prompt_eval_count": data.get("prompt_eval_count"),
+                "prompt_eval_duration": data.get("prompt_eval_duration"),
+                "eval_count": data.get("eval_count"),
+                "eval_duration": data.get("eval_duration"),
+                "done_reason": data.get("done_reason"),
             }
         except (httpx.HTTPError, ValueError) as exc:
             raise AppError("MODEL_UNAVAILABLE", "本地模型暂时不可用", 503, True, "llm", {"reason": str(exc)}) from exc
@@ -75,7 +82,7 @@ class OllamaProvider:
                 async with client.stream(
                     "POST",
                     f"{self.settings.ollama_base_url}/api/generate",
-                    json={"model": self.settings.ollama_llm_model, "prompt": composed, "stream": True, "options": self._generation_options()},
+                    json={"model": self.settings.ollama_llm_model, "prompt": composed, "stream": True, "keep_alive": self.settings.ollama_llm_keep_alive, "options": self._generation_options()},
                 ) as response:
                     response.raise_for_status()
                     async for line in response.aiter_lines():
@@ -92,6 +99,13 @@ class OllamaProvider:
                                     "provider": "ollama",
                                     "model": self.settings.ollama_llm_model,
                                     "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+                                    "total_duration": data.get("total_duration"),
+                                    "load_duration": data.get("load_duration"),
+                                    "prompt_eval_count": data.get("prompt_eval_count"),
+                                    "prompt_eval_duration": data.get("prompt_eval_duration"),
+                                    "eval_count": data.get("eval_count"),
+                                    "eval_duration": data.get("eval_duration"),
+                                    "done_reason": data.get("done_reason"),
                                 },
                             }
                             return
@@ -103,7 +117,15 @@ class OllamaProvider:
             async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
                 response = await client.post(
                     f"{self.settings.ollama_base_url}/api/embed",
-                    json={"model": self.settings.ollama_embed_model, "input": texts},
+                    json={
+                        "model": self.settings.ollama_embed_model,
+                        "input": texts,
+                        "keep_alive": self.settings.ollama_embed_keep_alive,
+                        "options": {
+                            "num_gpu": self.settings.ollama_embed_num_gpu,
+                            "num_thread": self.settings.ollama_embed_num_threads,
+                        },
+                    },
                 )
                 response.raise_for_status()
                 data = response.json()

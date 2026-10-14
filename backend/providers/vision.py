@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -14,25 +15,81 @@ from backend.providers.contracts import ProviderHealth, VisionObservation
 from backend.services.image_preprocessing import prepare_image_bytes
 
 
+def _as_list(value: object) -> list[object]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return [value]
+    return [value]
+
+
+def _as_text(value: object, default: str = "") -> str:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("description", "detail", "text", "name", "value", "type"):
+            if value.get(key) not in (None, ""):
+                return str(value[key]).strip()
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        return "、".join(text for item in value if (text := _as_text(item)) )
+    return str(value).strip()
+
+
+def _score(value: object) -> float:
+    if value is None or value == "":
+        return 0.5
+    if isinstance(value, str):
+        labels = {"high": 0.85, "medium": 0.6, "low": 0.3, "高": 0.85, "中": 0.6, "低": 0.3}
+        key = value.strip().lower()
+        if key in labels:
+            return labels[key]
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.5
+    if number != number:
+        return 0.5
+    return max(0.0, min(1.0, number))
+
+
 class ImageQuality(BaseModel):
     usable: bool = True
     issues: list[str] = Field(default_factory=list)
+
+    @field_validator("usable", mode="before")
+    @classmethod
+    def normalize_usable(cls, value: object) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return value.strip().lower() not in {"false", "0", "no", "不可用", "不清晰"}
+        return bool(value)
+
+    @field_validator("issues", mode="before")
+    @classmethod
+    def normalize_issues(cls, value: object) -> list[str]:
+        return [_as_text(item) for item in _as_list(value) if _as_text(item)]
 
 
 class ObservationItem(BaseModel):
     description: str = Field(min_length=1, max_length=500)
     evidence: str = ""
     confidence: float = Field(default=0.5, ge=0, le=1)
+
+    @field_validator("description", "evidence", mode="before")
+    @classmethod
+    def normalize_text_fields(cls, value: object) -> str:
+        return _as_text(value)
+
     @field_validator("confidence", mode="before")
     @classmethod
     def normalize_confidence(cls, value: object) -> float:
-        if isinstance(value, str):
-            labels = {"high": 0.85, "medium": 0.6, "low": 0.3, "高": 0.85, "中": 0.6, "低": 0.3}
-            key = value.strip().lower()
-            if key in labels:
-                return labels[key]
-        return float(value)
-
+        return _score(value)
 
 
 class MeasurementItem(BaseModel):
@@ -40,16 +97,26 @@ class MeasurementItem(BaseModel):
     value: float | None = None
     unit: str = ""
     confidence: float = Field(default=0.5, ge=0, le=1)
+
+    @field_validator("name", "unit", mode="before")
+    @classmethod
+    def normalize_text_fields(cls, value: object) -> str:
+        return _as_text(value)
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def normalize_value(cls, value: object) -> float | None:
+        if value is None or value == "":
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        match = re.search(r"-?\d+(?:\.\d+)?", _as_text(value))
+        return float(match.group(0)) if match else None
+
     @field_validator("confidence", mode="before")
     @classmethod
     def normalize_confidence(cls, value: object) -> float:
-        if isinstance(value, str):
-            labels = {"high": 0.85, "medium": 0.6, "low": 0.3, "高": 0.85, "中": 0.6, "低": 0.3}
-            key = value.strip().lower()
-            if key in labels:
-                return labels[key]
-        return float(value)
-
+        return _score(value)
 
 
 class CandidateAnomaly(BaseModel):
@@ -58,16 +125,21 @@ class CandidateAnomaly(BaseModel):
     evidence: list[str] = Field(default_factory=list)
     severity: str = "medium"
     confidence: float = Field(default=0.5, ge=0, le=1)
+
+    @field_validator("code", "description", "severity", mode="before")
+    @classmethod
+    def normalize_text_fields(cls, value: object) -> str:
+        return _as_text(value, "VISUAL_REVIEW" if value is None else "")
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def normalize_evidence(cls, value: object) -> list[str]:
+        return [_as_text(item) for item in _as_list(value) if _as_text(item)]
+
     @field_validator("confidence", mode="before")
     @classmethod
     def normalize_confidence(cls, value: object) -> float:
-        if isinstance(value, str):
-            labels = {"high": 0.85, "medium": 0.6, "low": 0.3, "高": 0.85, "中": 0.6, "低": 0.3}
-            key = value.strip().lower()
-            if key in labels:
-                return labels[key]
-        return float(value)
-
+        return _score(value)
 
 
 class VisionPayload(BaseModel):
@@ -78,59 +150,90 @@ class VisionPayload(BaseModel):
     observations: list[ObservationItem] = Field(default_factory=list)
     measurements: list[MeasurementItem] = Field(default_factory=list)
     candidate_anomalies: list[CandidateAnomaly] = Field(default_factory=list)
-    # Kept for compatibility with previously stored messages and the UI contract.
     suspected_anomalies: list[str] = Field(default_factory=list)
     uncertainties: list[str] = Field(default_factory=list)
     safety_flags: list[str] = Field(default_factory=list)
 
-    @field_validator("component", mode="before")
+    @field_validator("scene_summary", mode="before")
     @classmethod
-    def normalize_component(cls, value: object) -> str | None:
-        if value is None: return None
-        if isinstance(value, list):
-            return "、".join(str(item.get("description") if isinstance(item, dict) else item) for item in value)
-        return str(value)
+    def normalize_summary(cls, value: object) -> str:
+        return _as_text(value)
 
-    @field_validator("measurements", "candidate_anomalies", mode="before")
+    @field_validator("equipment_type", "component", mode="before")
     @classmethod
-    def normalize_singleton_arrays(cls, value: object) -> object:
-        if value is None: return []
-        return [value] if isinstance(value, dict) else value
+    def normalize_context_text(cls, value: object) -> str | None:
+        value = _as_text(value)
+        return value or None
+
+    @field_validator("image_quality", mode="before")
+    @classmethod
+    def normalize_image_quality(cls, value: object) -> object:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return value
+        return {"usable": True, "issues": [_as_text(value)]}
 
     @field_validator("observations", mode="before")
     @classmethod
     def normalize_observations(cls, value: object) -> list[dict[str, Any]]:
-        if value is None:
-            return []
-        if not isinstance(value, list):
-            raise ValueError("observations 必须是数组")
         normalized: list[dict[str, Any]] = []
-        for item in value:
+        for item in _as_list(value):
             if isinstance(item, str):
-                normalized.append({"description": item, "evidence": "", "confidence": 0.5})
-            elif isinstance(item, dict):
+                if item.strip():
+                    normalized.append({"description": item, "evidence": "", "confidence": 0.5})
+                continue
+            if not isinstance(item, dict):
+                continue
+            item = dict(item)
+            item["description"] = item.get("description") or item.get("detail") or item.get("text") or item.get("observation")
+            item["evidence"] = item.get("evidence") or item.get("location") or item.get("source") or ""
+            if item["description"] not in (None, ""):
                 normalized.append(item)
-            else:
-                raise ValueError("观察项必须是字符串或对象")
+        return normalized
+
+    @field_validator("measurements", mode="before")
+    @classmethod
+    def normalize_measurements(cls, value: object) -> list[object]:
+        normalized: list[object] = []
+        for item in _as_list(value):
+            if isinstance(item, str):
+                normalized.append({"name": "measurement", "value": item})
+            elif isinstance(item, dict):
+                item = dict(item)
+                item["name"] = item.get("name") or item.get("type") or "measurement"
+                normalized.append(item)
+        return normalized
+
+    @field_validator("candidate_anomalies", mode="before")
+    @classmethod
+    def normalize_anomalies(cls, value: object) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for item in _as_list(value):
+            if isinstance(item, str):
+                if item.strip():
+                    normalized.append({"code": "VISUAL_REVIEW", "description": item, "evidence": []})
+                continue
+            if not isinstance(item, dict):
+                continue
+            item = dict(item)
+            item["code"] = item.get("code") or item.get("type") or "VISUAL_REVIEW"
+            item["description"] = item.get("description") or item.get("detail") or item.get("name") or "图片疑似异常"
+            normalized.append(item)
         return normalized
 
     @field_validator("suspected_anomalies", "uncertainties", "safety_flags", mode="before")
     @classmethod
     def normalize_strings(cls, value: object) -> list[str]:
-        if value is None:
-            return []
-        if not isinstance(value, list):
-            raise ValueError("视觉列表字段必须是数组")
         result: list[str] = []
-        for item in value:
-            if isinstance(item, str):
-                result.append(item)
-            elif isinstance(item, dict):
-                parts = [item.get("type"), item.get("description"), item.get("detail")]
-                parts = [str(value) for value in parts if value]
-                result.append("：".join(parts) if parts else str(item))
+        for item in _as_list(value):
+            if isinstance(item, dict):
+                parts = [_as_text(item.get(key)) for key in ("type", "description", "detail")]
+                text = "：".join(part for part in parts if part)
             else:
-                raise ValueError("视觉列表元素必须是字符串或对象")
+                text = _as_text(item)
+            if text:
+                result.append(text)
         return result
 
 
@@ -148,7 +251,11 @@ def parse_vision_payload(raw: str, require_observation: bool = True) -> VisionOb
     try:
         parsed = VisionPayload.model_validate(_parse_json(raw))
     except ValidationError as exc:
-        raise RuntimeError("视觉模型未返回符合契约的结构化结果") from exc
+        details = "; ".join(
+            f"{'.'.join(str(part) for part in error.get('loc', ())) or 'root'}: {error.get('msg', 'invalid')}"
+            for error in exc.errors()[:5]
+        )
+        raise RuntimeError(f"视觉模型结构化结果校验失败：{details}") from exc
     if require_observation and not parsed.observations:
         raise RuntimeError("视觉模型返回了空观察结果")
     data = parsed.model_dump()
@@ -163,9 +270,13 @@ class OllamaVision:
     def __init__(self, settings=None) -> None:
         self.settings = settings or get_settings()
 
+    @property
+    def model_name(self) -> str | None:
+        return self.settings.ollama_vision_model
+
     async def _generate_json(self, image: str, instruction: str) -> dict[str, Any]:
         payload = {
-            "model": self.settings.ollama_vision_model,
+            "model": self.model_name,
             "prompt": instruction,
             "images": [image],
             "stream": False,
@@ -184,13 +295,14 @@ class OllamaVision:
             return _parse_json(response.json().get("response", ""))
 
     async def analyze(self, path: Path, prompt: str) -> VisionObservation:
-        if not self.settings.ollama_vision_model:
+        if not self.model_name:
             raise RuntimeError("未配置 OLLAMA_VISION_MODEL")
         image = base64.b64encode(prepare_image_bytes(path, max_size=self.settings.vision_image_max_size)).decode("ascii")
         fact_instruction = (
             "你是工业设备视觉取证助手。第一轮只记录图片中能直接看见的客观事实，不要猜测内部故障。"
             "只返回 JSON，字段必须为 scene_summary, equipment_type, component, image_quality, observations, measurements, candidate_anomalies, uncertainties, safety_flags。"
             "image_quality 包含 usable 和 issues；observations 是对象数组，每项包含 description、evidence、confidence(0到1)；"
+            "observations 最多返回 8 条，每条描述不超过 120 字；不要重复描述同一部件。"
             "measurements 是 name、value、unit、confidence；无法读出的值填 null。"
             "candidate_anomalies 是有图片证据支持的疑似异常数组，每项包含 code、description、evidence、severity、confidence；没有证据时返回空数组。"
             "请特别检查仪表读数、报警灯/故障码、开盖或裸露部件、泄漏、裂纹、烧蚀、异常颜色、锈蚀和部件缺失。"
@@ -231,14 +343,41 @@ class OllamaVision:
         return fact_result
 
     async def health(self) -> ProviderHealth:
-        if not self.settings.ollama_vision_model:
+        if not self.model_name:
             return ProviderHealth("ollama-vision", False, "未配置 OLLAMA_VISION_MODEL")
         try:
             async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
                 response = await client.get(f"{self.settings.ollama_base_url}/api/tags")
                 response.raise_for_status()
                 names = {m.get("name") for m in response.json().get("models", [])}
-            available = self.settings.ollama_vision_model in names
-            return ProviderHealth("ollama-vision", available, None if available else "视觉模型未安装", self.settings.ollama_vision_model)
+            available = self.model_name in names
+            return ProviderHealth("ollama-vision", available, None if available else "视觉模型未安装", self.model_name)
         except Exception as exc:
-            return ProviderHealth("ollama-vision", False, str(exc), self.settings.ollama_vision_model)
+            return ProviderHealth("ollama-vision", False, str(exc), self.model_name)
+
+
+class QwenVision(OllamaVision):
+    """Qwen vision adapter sharing the same validated two-pass contract."""
+
+    @property
+    def model_name(self) -> str | None:
+        return self.settings.qwen_model
+
+    async def _generate_json(self, image: str, instruction: str) -> dict[str, Any]:
+        from backend.providers.qwen import QwenProvider
+
+        return await QwenProvider(self.settings).vision_json(image, instruction)
+
+    async def health(self) -> ProviderHealth:
+        from backend.providers.qwen import QwenProvider
+
+        result = await QwenProvider(self.settings).health()
+        return ProviderHealth(
+            "qwen-vision",
+            bool(result.get("available")),
+            result.get("reason"),
+            self.model_name,
+            result.get("latency_ms"),
+        )
+
+

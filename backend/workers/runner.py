@@ -35,7 +35,7 @@ def run_one() -> bool:
     worker_id = f"{socket.gethostname()}-{os.getpid()}"
     db = SessionLocal()
     try:
-        job = claim_next(db, worker_id)
+        job = claim_next(db, worker_id, settings.worker_lease_seconds)
         if not job:
             return False
         logger.info("job started id=%s kind=%s attempt=%s", job.id, job.kind, job.attempts)
@@ -53,12 +53,22 @@ def run_one() -> bool:
                 finish_job(db, job, "failed", error_code="JOB_KIND_UNSUPPORTED")
                 return True
             finish_job(db, db.get(BackgroundJob, job.id), status, result)
+            logger.info(
+                "job finished id=%s kind=%s status=%s attempts=%s metrics=%s",
+                job.id,
+                job.kind,
+                status,
+                job.attempts,
+                (result or {}).get("metrics", {}) if isinstance(result, dict) else {},
+            )
         except AppError as exc:
             current = db.get(BackgroundJob, job.id)
             if current and current.attempts < current.max_attempts and exc.retryable:
                 requeue_job(db, current, exc.code, delay_seconds=min(30, 2 ** current.attempts))
+                logger.warning("job retrying id=%s kind=%s attempt=%s code=%s", job.id, job.kind, job.attempts, exc.code)
             else:
                 finish_job(db, current or job, "failed", {"message": exc.message}, exc.code)
+                logger.error("job failed id=%s kind=%s attempts=%s code=%s", job.id, job.kind, job.attempts, exc.code)
         except Exception:
             logger.exception("job failed id=%s kind=%s", job.id, job.kind)
             current = db.get(BackgroundJob, job.id)

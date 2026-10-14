@@ -1,9 +1,11 @@
 import pytest
 from backend.providers.ollama import OllamaProvider
+from backend.providers.qwen import QwenProvider
 from backend.core.security import create_access_token, decode_access_token, hash_password, verify_password
 from backend.rag.service import chunk_text, cosine
 from backend.providers.vision import VisionPayload, parse_vision_payload
 from backend.api.advanced_routes import SSE_DONE, _visual_evidence
+from backend.core.config import Settings
 
 
 def test_password_hash_round_trip():
@@ -62,3 +64,29 @@ def test_visual_evidence_preserves_anomaly_signal():
     assert "[图片现场证据]" in evidence
     assert "疑似异常" in evidence
     assert "温度显示 86°C" in evidence
+
+
+def test_embedding_options_force_cpu_without_changing_model():
+    provider = OllamaProvider(Settings(ollama_embed_num_gpu=0, ollama_embed_num_threads=4))
+    # Keep this contract explicit: embedding isolation must not alter the selected model.
+    assert provider.settings.ollama_embed_model == "quentinz/bge-large-zh-v1.5:latest"
+    assert provider.settings.ollama_embed_num_gpu == 0
+    assert provider.settings.ollama_embed_num_threads == 4
+
+
+def test_qwen_provider_uses_openai_compatible_contract():
+    provider = QwenProvider(Settings(model_provider="qwen", qwen_api_key="test-key", qwen_model="qwen3.7-flash"))
+    body = provider._request_body("请分析设备", stream=True)
+    assert body["model"] == "qwen3.7-flash"
+    assert body["stream"] is True
+    assert body["enable_thinking"] is True
+    assert body["messages"][0]["content"] == "请分析设备"
+
+
+def test_qwen_vision_request_uses_same_model_and_json_contract():
+    provider = QwenProvider(Settings(model_provider="qwen", qwen_api_key="test-key", qwen_model="qwen3.7-flash"))
+    body = provider._request_body("只返回 JSON", stream=False, image="ZmFrZQ==")
+    assert body["model"] == "qwen3.7-flash"
+    assert body["enable_thinking"] is False
+    assert body["messages"][0]["content"][1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+

@@ -5,14 +5,16 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
+from backend.core.config import get_settings
 from backend.repositories.advanced_models import BackgroundJob, JobEvent
 from backend.repositories.models import utc_now
 
 
 TERMINAL_JOB_STATES = {"succeeded", "partial", "failed", "cancelled"}
+settings = get_settings()
 
 
 def create_job(
@@ -22,11 +24,13 @@ def create_job(
     owner_id: str,
     payload: dict,
     session_id: str | None = None,
+    request_id: str | None = None,
     max_attempts: int = 3,
 ) -> BackgroundJob:
     item = BackgroundJob(
         kind=kind,
         owner_id=owner_id,
+        request_id=request_id,
         session_id=session_id,
         payload_json=payload,
         status="queued",
@@ -69,11 +73,25 @@ def recover_stale_jobs(db: Session, lease_seconds: int = 300) -> int:
 def claim_next(db: Session, worker_id: str, lease_seconds: int = 300) -> BackgroundJob | None:
     recover_stale_jobs(db, lease_seconds)
     now = utc_now()
-    item = db.scalar(
+    candidates = db.scalars(
         select(BackgroundJob)
         .where(BackgroundJob.status == "queued", BackgroundJob.available_at <= now)
         .order_by(BackgroundJob.created_at)
-        .limit(1)
+        .limit(20)
+    ).all()
+    running_diagnosis = db.scalar(
+        select(func.count()).select_from(BackgroundJob).where(
+            BackgroundJob.status == "running",
+            BackgroundJob.kind == "diagnosis.multimodal",
+        )
+    ) or 0
+    item = next(
+        (
+            candidate
+            for candidate in candidates
+            if candidate.kind != "diagnosis.multimodal" or running_diagnosis < max(1, settings.worker_max_active_diagnosis)
+        ),
+        None,
     )
     if not item:
         return None
@@ -124,7 +142,7 @@ def requeue_job(db: Session, item: BackgroundJob, error_code: str, delay_seconds
     item.locked_at = None
     item.locked_by = None
     item.available_at = utc_now() + timedelta(seconds=max(0, delay_seconds))
-    append_event(db, item.id, "requeued", {"error_code": error_code, "attempt": item.attempts})
+    append_event(db, item.id, "requeued", {"error_code": error_code, "attempt": item.attempts, "next_attempt": item.attempts + 1})
     db.commit()
 
 
@@ -148,10 +166,13 @@ def job_view(item: BackgroundJob) -> dict:
         "id": item.id,
         "kind": item.kind,
         "owner_id": item.owner_id,
+        "request_id": item.request_id,
         "session_id": item.session_id,
         "status": item.status,
         "result": item.result_json,
+        "metrics": item.metrics_json or {},
         "error_code": item.error_code,
+        "error_detail": item.error_detail,
         "attempts": item.attempts,
         "max_attempts": item.max_attempts,
         "created_at": item.created_at.isoformat() if item.created_at else None,

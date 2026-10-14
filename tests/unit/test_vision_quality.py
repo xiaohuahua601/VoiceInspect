@@ -21,6 +21,42 @@ def test_structured_vision_payload_accepts_observations_and_measurements():
     assert result.candidate_anomalies[0]["evidence"] == ["temperature"]
 
 
+def test_vision_payload_tolerates_null_confidence_and_display_measurements():
+    result = parse_vision_payload(json.dumps({
+        "scene_summary": "空压机控制面板",
+        "observations": [{"description": "显示屏温度 118°C", "evidence": "控制面板", "confidence": None}],
+        "measurements": [{"name": "temperature", "value": "118°C", "unit": "°C", "confidence": None}],
+        "candidate_anomalies": [{"code": "HIGH_TEMPERATURE", "description": "温度偏高", "evidence": "temperature", "confidence": None}],
+    }, ensure_ascii=False))
+    assert result.observations[0]["confidence"] == 0.5
+    assert result.measurements[0]["value"] == 118.0
+    assert result.measurements[0]["confidence"] == 0.5
+    assert result.candidate_anomalies[0]["confidence"] == 0.5
+    assert result.candidate_anomalies[0]["evidence"] == ["temperature"]
+
+
+def test_vision_payload_normalizes_common_model_field_variants():
+    result = parse_vision_payload(json.dumps({
+        "scene_summary": None,
+        "equipment_type": {"name": "compressor"},
+        "image_quality": None,
+        "observations": {"description": "报警灯亮起", "evidence": ["控制面板"], "confidence": "high"},
+        "measurements": "温度 118°C",
+        "candidate_anomalies": {"description": None, "detail": "可能高温", "evidence": {"description": "报警灯"}, "confidence": 2},
+        "uncertainties": "需要现场复核",
+        "safety_flags": {"description": "先停机断电"},
+    }, ensure_ascii=False))
+    assert result.scene_summary == ""
+    assert result.equipment_type == "compressor"
+    assert result.observations[0]["confidence"] == 0.85
+    assert result.observations[0]["evidence"] == "控制面板"
+    assert result.measurements[0]["value"] == 118.0
+    assert result.candidate_anomalies[0]["description"] == "可能高温"
+    assert result.candidate_anomalies[0]["confidence"] == 1.0
+    assert result.uncertainties == ["需要现场复核"]
+    assert result.safety_flags == ["先停机断电"]
+
+
 def test_visual_rules_add_threshold_candidate_and_require_evidence():
     raw = {
         "equipment_type": "compressor",

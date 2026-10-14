@@ -25,6 +25,20 @@ class Asset(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class MessageAsset(Base):
+    """Associates persisted uploads with the user message that submitted them."""
+
+    __tablename__ = "message_assets"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    message_id: Mapped[str] = mapped_column(ForeignKey("messages.id"), index=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("assets.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    __table_args__ = (
+        UniqueConstraint("message_id", "asset_id", name="uq_message_assets_message_asset"),
+        Index("ix_message_assets_message_created", "message_id", "created_at"),
+    )
+
+
 class CapabilityTask(Base):
     __tablename__ = "capability_tasks"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -47,6 +61,7 @@ class BackgroundJob(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     kind: Mapped[str] = mapped_column(String(60))
     owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    request_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
     session_id: Mapped[str | None] = mapped_column(ForeignKey("sessions.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="queued")
     payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -60,10 +75,13 @@ class BackgroundJob(Base):
     cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metrics_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error_detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     __table_args__ = (
         Index("ix_background_jobs_status_available", "status", "available_at"),
         Index("ix_background_jobs_owner_created", "owner_id", "created_at"),
+        UniqueConstraint("owner_id", "request_id", name="uq_background_jobs_owner_request"),
     )
 
 
